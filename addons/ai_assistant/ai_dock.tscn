@@ -27,6 +27,11 @@ text = " 十 "
 
 [node name="SessionSelector" type="OptionButton" parent="VBoxContainer/HBoxContainer_top" unique_id=2097912020]
 layout_mode = 2
+selected = 0
+item_count = 1
+popup/item_0/text = "【当前脚本】
+```gd..."
+popup/item_0/id = 0
 
 [node name="DeleteChatButton" type="Button" parent="VBoxContainer/HBoxContainer_top" unique_id=1469255323]
 layout_mode = 2
@@ -48,6 +53,12 @@ layout_mode = 2
 [node name="ModelSelector" type="OptionButton" parent="VBoxContainer/HBoxContainer" unique_id=1276823479]
 custom_minimum_size = Vector2(50, 0)
 layout_mode = 2
+selected = 0
+item_count = 2
+popup/item_0/text = "Chat"
+popup/item_0/id = 0
+popup/item_1/text = "Reasoner"
+popup/item_1/id = 1
 
 [node name="ClearButton" type="Button" parent="VBoxContainer/HBoxContainer" unique_id=489092874]
 layout_mode = 2

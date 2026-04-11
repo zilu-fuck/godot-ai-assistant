@@ -6,12 +6,12 @@ extends Control
 @onready var input_box = $VBoxContainer/TextEdit
 @onready var http_request = $HTTPRequest
 
-# 顶部容器 (对应你的 HBoxContainer_top)
+# 顶部容器
 @onready var session_selector = $VBoxContainer/HBoxContainer_top/SessionSelector
 @onready var new_chat_button = $VBoxContainer/HBoxContainer_top/NewChatButton
 @onready var delete_chat_button = $VBoxContainer/HBoxContainer_top/DeleteChatButton
 
-# 底部容器 (对应你的 HBoxContainer)
+# 底部容器
 @onready var model_selector = $VBoxContainer/HBoxContainer/ModelSelector
 @onready var clear_button = $VBoxContainer/HBoxContainer/ClearButton
 @onready var compress_button = $VBoxContainer/HBoxContainer/CompressButton
@@ -25,21 +25,42 @@ extends Control
 @onready var model_input = $SettingsDialog/VBoxContainer/ModelInput
 
 const CONFIG_PATH = "user://ai_assistant_config.cfg"
-const SESSIONS_PATH = "user://ai_sessions.json" # 🌟 会话存档路径
+const SESSIONS_PATH = "user://ai_sessions.json"
+
+# ==========================================
+# ⚙️ 模型能力画像 (解决硬编码的关键)
+# ==========================================
+const MODEL_PROFILES = {
+	"deepseek-chat": {
+		"name": "DeepSeek Chat (V3.2)",
+		"use_system_role": true,
+		"context_style": "default",
+		"temperature": 0.7
+	},
+	"deepseek-reasoner": {
+		"name": "DeepSeek Reasoner (R1)",
+		"use_system_role": false,      # R1 不建议使用 system 角色
+		"context_style": "instruction_prefix", # 指令前置风格
+		"temperature": 0.3             # 推理模型通常使用低采样
+	}
+}
 
 # --- 核心变量 ---
 var current_api_url: String = "https://api.deepseek.com/chat/completions"
 var current_api_key: String = ""
 var current_model: String = "deepseek-chat"
 
-var all_sessions: Dictionary = {} # 存储所有会话
+var all_sessions: Dictionary = {} 
 var current_session_id: String = ""
 var last_generated_code: String = ""
 var is_compressing: bool = false
-const MAX_HISTORY_LENGTH = 15 # 自动截断阈值
+
+# --- 优化策略变量 ---
+const MAX_HISTORY_LENGTH = 15 
+var last_sent_script_content: String = "" 
+var max_scan_depth = 3 
 
 func _ready():
-	# 连接信号
 	http_request.request_completed.connect(_on_request_completed)
 	send_button.pressed.connect(_on_send_pressed)
 	insert_button.pressed.connect(_on_insert_pressed)
@@ -53,20 +74,19 @@ func _ready():
 
 	_setup_model_selector()
 	load_config()
-	load_all_sessions() # 从本地磁盘读取之前的对话
+	load_all_sessions()
 	
-	# 如果是第一次运行，自动创建一个新对话
 	if all_sessions.is_empty():
 		_on_new_chat_pressed()
 	else:
 		_sync_session_ui()
-		_load_session_to_ui(all_sessions.keys().back()) # 加载最后一个对话
+		_load_session_to_ui(all_sessions.keys().back())
 
 func _print_welcome_message():
 	output_box.append_text("[color=#888888]系统：AI 助手已就绪。当前模型：" + current_model + "[/color]\n\n")
 
 # ==========================================
-# 🌟 会话持久化与管理
+# 🌟 会话管理逻辑
 # ==========================================
 
 func _on_new_chat_pressed():
@@ -80,28 +100,20 @@ func _on_new_chat_pressed():
 	_load_session_to_ui(current_session_id)
 	output_box.append_text("[color=#98C379]✨ 已开启新对话。[/color]\n\n")
 
-# 点击 ❌ 按钮：删除当前会话
 func _on_delete_chat_pressed():
 	if current_session_id == "" or all_sessions.is_empty(): return
-	
-	# 弹窗确认（可选，这里先做直接删除，效率更高）
 	all_sessions.erase(current_session_id)
-	
 	if all_sessions.is_empty():
-		# 如果删光了，自动建个新的
 		_on_new_chat_pressed()
 	else:
-		# 如果还有剩下的，切换到第一个
 		current_session_id = all_sessions.keys().back()
 		_load_session_to_ui(current_session_id)
 		_sync_session_ui()
-	
 	save_all_sessions_to_disk()
-	output_box.append_text("[color=#E06C75]系统：该会话已从硬盘永久删除。[/color]\n\n")
+	output_box.append_text("[color=#E06C75]系统：会话已删除。[/color]\n\n")
 
 func _on_session_selected(index: int):
 	_save_current_to_memory()
-	# 因为 UI 倒序显示最新的，所以我们要反转索引找到对应的 ID
 	var ids = all_sessions.keys()
 	ids.reverse() 
 	current_session_id = ids[index]
@@ -109,7 +121,6 @@ func _on_session_selected(index: int):
 
 func _save_current_to_memory():
 	if current_session_id != "" and all_sessions.has(current_session_id):
-		# 如果还没标题，用第一句提问当标题
 		var history = all_sessions[current_session_id]["history"]
 		if history.size() > 0 and all_sessions[current_session_id]["title"].begins_with("新对话"):
 			all_sessions[current_session_id]["title"] = history[0]["content"].left(12) + "..."
@@ -128,7 +139,6 @@ func _sync_session_ui():
 	ids.reverse()
 	for id in ids:
 		session_selector.add_item(all_sessions[id]["title"])
-	# 重新定位选中项
 	for i in range(ids.size()):
 		if ids[i] == current_session_id:
 			session_selector.selected = i
@@ -145,74 +155,73 @@ func load_all_sessions():
 		if json is Dictionary: all_sessions = json
 
 # ==========================================
-# 🌟 清空与压缩
-# ==========================================
-
-func _on_clear_pressed():
-	if all_sessions.has(current_session_id):
-		all_sessions[current_session_id]["history"].clear()
-		output_box.clear()
-		_print_welcome_message()
-		save_all_sessions_to_disk()
-
-func _on_compress_pressed():
-	if current_api_key == "" or not all_sessions.has(current_session_id): return
-	var history = all_sessions[current_session_id]["history"]
-	if history.size() <= 2: return
-	
-	is_compressing = true
-	_set_ui_busy(true)
-	output_box.append_text("[color=#E5C07B]✂️ 正在提炼记忆摘要...[/color]\n")
-	
-	var raw_text = ""
-	for msg in history: raw_text += msg["role"] + ": " + msg["content"] + "\n"
-	
-	var compress_msg = [
-		{"role": "system", "content": "总结以下对话为一段简短备忘录，保留核心逻辑。不要输出代码块。"},
-		{"role": "user", "content": raw_text}
-	]
-	
-	var headers = ["Content-Type: application/json", "Authorization: Bearer " + current_api_key]
-	var body = JSON.stringify({"model": "deepseek-chat", "messages": compress_msg, "temperature": 0.1})
-	http_request.request(current_api_url, headers, HTTPClient.METHOD_POST, body)
-
-# ==========================================
-# 🚀 核心请求逻辑
+# 🚀 核心发送逻辑 (解耦与优化版)
 # ==========================================
 
 func _on_send_pressed():
 	var prompt = input_box.text.strip_edges()
 	if prompt == "" or current_api_key == "": return
 	
+	# 获取当前模型的“性格配置”
+	var profile = MODEL_PROFILES.get(current_model, MODEL_PROFILES["deepseek-chat"])
+	
+	# 1. 存入纯净历史 (不带代码上下文)
 	_render_message("user", prompt)
+	all_sessions[current_session_id]["history"].append({"role": "user", "content": prompt})
 	input_box.text = ""
 	_set_ui_busy(true)
-	
-	all_sessions[current_session_id]["history"].append({"role": "user", "content": prompt})
-	
-	var messages = [
-		{"role": "system", "content": "你是一个Godot 4高级架构师。必须用 ```gdscript 包裹代码。"},
-		{"role": "system", "content": get_project_context()}
-	]
-	# 注入历史记录
-	for msg in all_sessions[current_session_id]["history"]: messages.append(msg)
-	
-	# 注入当前脚本上下文
+
+	# 2. 准备动态代码上下文
 	var cur_code = get_current_script_text()
+	var code_context = ""
 	if cur_code != "":
-		messages.back()["content"] = "【当前脚本】\n```gdscript\n" + cur_code + "\n```\n\n【需求】：" + prompt
+		if cur_code != last_sent_script_content:
+			code_context = "\n\n【当前脚本已更新】:\n```gdscript\n" + cur_code + "\n```"
+			last_sent_script_content = cur_code
+		else:
+			code_context = "\n\n（当前脚本内容未变化）"
 
+	# 3. 组装消息列表
+	var messages = []
+	
+	# 系统提示词 (根据模型画像判断是否添加)
+	if profile["use_system_role"]:
+		var sys_msg = "你是一个专业 Godot 4 开发助手。回答使用中文，代码用 ```gdscript 包裹。\n"
+		sys_msg += get_project_context()
+		messages.append({"role": "system", "content": sys_msg})
+	
+	# 注入历史记录 (截断逻辑)
+	var history_for_req = all_sessions[current_session_id]["history"].duplicate()
+	if history_for_req.size() > MAX_HISTORY_LENGTH:
+		history_for_req = history_for_req.slice(-MAX_HISTORY_LENGTH)
+	
+	for msg in history_for_req:
+		messages.append(msg.duplicate())
+	
+	# 4. 根据上下文风格拼接最后一条消息
+	var last_msg = messages.back()
+	if profile["context_style"] == "instruction_prefix":
+		last_msg["content"] = "【指令】分析代码并处理需求：\n" + code_context + "\n\n【需求】：" + prompt
+	else:
+		last_msg["content"] = prompt + code_context
+
+	# 5. 发送请求
 	var headers = ["Content-Type: application/json", "Authorization: Bearer " + current_api_key]
-	var body = JSON.stringify({"model": current_model, "messages": messages, "temperature": 0.2})
-	http_request.request(current_api_url, headers, HTTPClient.METHOD_POST, body)
+	var body = {
+		"model": current_model,
+		"messages": messages,
+		"temperature": profile["temperature"]
+	}
+	http_request.request(current_api_url, headers, HTTPClient.METHOD_POST, JSON.stringify(body))
 
-func _on_request_completed(result, response_code, headers, body):
+func _on_request_completed(_result, response_code, _headers, body):
 	_set_ui_busy(false)
 	if response_code == 200:
 		var json = JSON.parse_string(body.get_string_from_utf8())
 		var message = json["choices"][0]["message"]
 		var reply = message["content"]
 		
+		# 处理压缩逻辑
 		if is_compressing:
 			is_compressing = false
 			all_sessions[current_session_id]["history"] = [{"role": "assistant", "content": "【记忆摘要】：\n" + reply}]
@@ -220,8 +229,8 @@ func _on_request_completed(result, response_code, headers, body):
 			output_box.append_text("[color=#98C379]✅ 压缩完成。[/color]\n")
 			return
 
-		var reasoning = message.get("reasoning_content", "")
 		# 提取思维链
+		var reasoning = message.get("reasoning_content", "")
 		if "<think>" in reply:
 			var parts = reply.split("</think>")
 			if parts.size() > 1:
@@ -234,66 +243,62 @@ func _on_request_completed(result, response_code, headers, body):
 		last_generated_code = extract_code_from_markdown(reply)
 		insert_button.disabled = (last_generated_code == "")
 		_save_current_to_memory()
-		_sync_session_ui() # 更新标题
+		_sync_session_ui() 
 	else:
-		output_box.append_text("[color=#E06C75]错误: " + str(response_code) + "[/color]\n")
+		output_box.append_text("[color=#E06C75]错误代码: " + str(response_code) + "[/color]\n")
 
 # ==========================================
-# 🛠️ 辅助 UI 函数
+# 🛠️ 上下文获取 (全项目扫描)
 # ==========================================
-
-func _render_message(role: String, content: String, reasoning: String = ""):
-	if role == "user":
-		output_box.append_text("[color=#98C379][b]🧑 你：[/b][/color]\n" + content + "\n\n")
-	else:
-		if reasoning != "":
-			output_box.append_text("[color=#5C6370][i]🧠 推理：\n" + reasoning + "\n[/i][/color]\n")
-		output_box.append_text("[color=#61AFEF][b]🤖 AI：[/b][/color]\n" + content + "\n")
-		output_box.append_text("[color=#555555]------------------------[/color]\n\n")
-
-func _set_ui_busy(busy: bool):
-	send_button.disabled = busy
-	new_chat_button.disabled = busy
-	compress_button.disabled = busy
-	clear_button.disabled = busy
-	delete_chat_button.disabled = busy # 🌟 忙碌时禁用删除
-
-# --- 以下为你原有的工具函数 (保持不变) ---
-func extract_code_from_markdown(text: String) -> String:
-	var regex = RegEx.new()
-	regex.compile("```[a-zA-Z]*\\n([\\s\\S]*?)```")
-	var m = regex.search(text)
-	return m.get_string(1).strip_edges() if m else ""
-
-func _on_insert_pressed():
-	if last_generated_code == "": return
-	var ce = EditorInterface.get_script_editor().get_current_editor()
-	if ce and ce.get_base_editor() is CodeEdit:
-		ce.get_base_editor().insert_text_at_caret(last_generated_code + "\n")
 
 func get_project_context() -> String:
-	var ctx = "【项目地图】\n"
+	var ctx = "\n【项目地图】\n"
+	ctx += "--- 单例 (Autoloads) ---\n"
 	for prop in ProjectSettings.get_property_list():
 		if prop.name.begins_with("autoload/"):
-			ctx += "- 单例: " + prop.name.replace("autoload/", "") + "\n"
+			ctx += "- " + prop.name.replace("autoload/", "") + "\n"
+	
+	ctx += "\n--- 关键文件结构 ---\n"
+	ctx += _scan_directory("res://", 0)
 	return ctx
 
-func get_current_script_text() -> String:
-	var ce = EditorInterface.get_script_editor().get_current_editor()
-	return ce.get_base_editor().text if (ce and ce.get_base_editor() is CodeEdit) else ""
+func _scan_directory(path: String, depth: int) -> String:
+	if depth > max_scan_depth: return ""
+	var result = ""
+	var dir = DirAccess.open(path)
+	if dir:
+		dir.list_dir_begin()
+		var file_name = dir.get_next()
+		while file_name != "":
+			if file_name.begin_with(".") or file_name == "addons":
+				file_name = dir.get_next()
+				continue
+			var full_path = path + file_name
+			var indent = "  ".repeat(depth)
+			if dir.current_is_dir():
+				result += indent + "📁 " + file_name + "/\n"
+				result += _scan_directory(full_path + "/", depth + 1)
+			else:
+				if file_name.ends_with(".gd") or file_name.ends_with(".tscn") or file_name.ends_with(".gdshader"):
+					result += indent + "📄 " + file_name + "\n"
+			file_name = dir.get_next()
+	return result
+
+# ==========================================
+# ⚙️ 配置与 UI 辅助
+# ==========================================
 
 func _setup_model_selector():
 	model_selector.clear()
-	model_selector.add_item("Chat", 0)
-	model_selector.add_item("Reasoner", 1)
-	model_selector.item_selected.connect(_on_model_item_selected)
+	var keys = MODEL_PROFILES.keys()
+	for i in range(keys.size()):
+		var key = keys[i]
+		model_selector.add_item(MODEL_PROFILES[key]["name"], i)
+		model_selector.set_item_metadata(i, key) # 存入真实的 model 字符串
 
 func _on_model_item_selected(index: int):
-	current_model = "deepseek-chat" if index == 0 else "deepseek-reasoner"
+	current_model = model_selector.get_item_metadata(index)
 	save_config(current_api_url, current_api_key, current_model)
-
-func _sync_ui_with_config():
-	model_selector.selected = 1 if "reasoner" in current_model else 0
 
 func load_config():
 	var config = ConfigFile.new()
@@ -301,6 +306,11 @@ func load_config():
 		current_api_url = config.get_value("API", "url", "[https://api.deepseek.com/chat/completions](https://api.deepseek.com/chat/completions)")
 		current_api_key = config.get_value("API", "key", "")
 		current_model = config.get_value("API", "model", "deepseek-chat")
+		# 还原 UI 选中状态
+		for i in range(model_selector.item_count):
+			if model_selector.get_item_metadata(i) == current_model:
+				model_selector.selected = i
+				break
 
 func save_config(url, key, model):
 	var config = ConfigFile.new()
@@ -310,11 +320,72 @@ func save_config(url, key, model):
 	config.save(CONFIG_PATH)
 	current_api_url = url; current_api_key = key; current_model = model
 
+func _on_settings_dialog_confirmed():
+	save_config(api_url_input.text, api_key_input.text, model_input.text)
+
+func _on_compress_pressed():
+	if current_api_key == "" or not all_sessions.has(current_session_id): return
+	var history = all_sessions[current_session_id]["history"]
+	if history.size() <= 2: return
+	
+	is_compressing = true
+	_set_ui_busy(true)
+	output_box.append_text("[color=#E5C07B]✂️ 正在压缩长对话...[/color]\n")
+	
+	var raw_text = ""
+	for msg in history: raw_text += msg["role"] + ": " + msg["content"] + "\n"
+	
+	var compress_msg = [
+		{"role": "system", "content": "请用一小段话总结以下对话的核心需求。不要代码。"},
+		{"role": "user", "content": raw_text}
+	]
+	
+	var headers = ["Content-Type: application/json", "Authorization: Bearer " + current_api_key]
+	var body = JSON.stringify({"model": "deepseek-chat", "messages": compress_msg, "temperature": 0.1})
+	http_request.request(current_api_url, headers, HTTPClient.METHOD_POST, body)
+
+# --- 原有工具函数保持不变 ---
+func _render_message(role: String, content: String, reasoning: String = ""):
+	if role == "user":
+		output_box.append_text("[color=#98C379][b]🧑 你：[/b][/color]\n" + content + "\n\n")
+	else:
+		if reasoning != "":
+			output_box.append_text("[color=#5C6370][i]🧠 思考逻辑：\n" + reasoning + "\n[/i][/color]\n")
+		output_box.append_text("[color=#61AFEF][b]🤖 AI：[/b][/color]\n" + content + "\n")
+		output_box.append_text("[color=#555555]------------------------[/color]\n\n")
+
+func extract_code_from_markdown(text: String) -> String:
+	var regex = RegEx.new()
+	regex.compile("```[a-zA-Z]*\\n([\\s\\S]*?)```")
+	var m = regex.search(text)
+	return m.get_string(1).strip_edges() if m else ""
+
+func get_current_script_text() -> String:
+	var ce = EditorInterface.get_script_editor().get_current_editor()
+	return ce.get_base_editor().text if (ce and ce.get_base_editor() is CodeEdit) else ""
+
+func _set_ui_busy(busy: bool):
+	send_button.disabled = busy
+	new_chat_button.disabled = busy
+	compress_button.disabled = busy
+	clear_button.disabled = busy
+	delete_chat_button.disabled = busy
+
+func _on_clear_pressed():
+	if all_sessions.has(current_session_id):
+		all_sessions[current_session_id]["history"].clear()
+		output_box.clear()
+		_print_welcome_message()
+		save_all_sessions_to_disk()
+
 func _on_settings_button_pressed():
 	api_url_input.text = current_api_url
 	api_key_input.text = current_api_key
 	model_input.text = current_model
 	settings_dialog.popup_centered()
 
-func _on_settings_dialog_confirmed():
-	save_config(api_url_input.text, api_key_input.text, model_input.text)
+func _on_insert_pressed():
+	if last_generated_code == "": return
+	var ce = EditorInterface.get_script_editor().get_current_editor()
+	if ce and ce.get_base_editor() is CodeEdit:
+		ce.get_base_editor().insert_text_at_caret(last_generated_code + "\n")
