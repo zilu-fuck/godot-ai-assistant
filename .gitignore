@@ -1,0 +1,12 @@
+# Godot 4+ specific ignores
+# 忽略 Godot 自动生成的导入文件
+.godot/
+
+# 忽略插件的私有配置文件（保护 API Key）
+addons/ai_assistant/*.cfg
+
+# 忽略聊天记录存档
+addons/ai_assistant/*.json
+
+# 忽略导出模板和日志
+*.log

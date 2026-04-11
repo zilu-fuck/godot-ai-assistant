@@ -1,0 +1,114 @@
+[gd_scene format=3 uid="uid://crejbak5rxyhi"]
+
+[ext_resource type="Script" uid="uid://rhmdu7c2ngeg" path="res://addons/ai_assistant/ai_dock.gd" id="1_5w681"]
+
+[node name="AI助手" type="Control" unique_id=591429016]
+layout_mode = 3
+anchors_preset = 0
+offset_right = 344.0
+offset_bottom = 734.0
+script = ExtResource("1_5w681")
+metadata/_edit_vertical_guides_ = [348.0]
+
+[node name="VBoxContainer" type="VBoxContainer" parent="." unique_id=535795062]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="HBoxContainer_top" type="HBoxContainer" parent="VBoxContainer" unique_id=1721744766]
+layout_mode = 2
+
+[node name="NewChatButton" type="Button" parent="VBoxContainer/HBoxContainer_top" unique_id=2118778931]
+layout_mode = 2
+text = " 十 "
+
+[node name="SessionSelector" type="OptionButton" parent="VBoxContainer/HBoxContainer_top" unique_id=2097912020]
+layout_mode = 2
+
+[node name="DeleteChatButton" type="Button" parent="VBoxContainer/HBoxContainer_top" unique_id=1469255323]
+layout_mode = 2
+text = "❌"
+
+[node name="RichTextLabel" type="RichTextLabel" parent="VBoxContainer" unique_id=1471563147]
+custom_minimum_size = Vector2(0, 700)
+layout_mode = 2
+size_flags_vertical = 3
+bbcode_enabled = true
+
+[node name="TextEdit" type="TextEdit" parent="VBoxContainer" unique_id=1198029546]
+custom_minimum_size = Vector2(0, 100)
+layout_mode = 2
+
+[node name="HBoxContainer" type="HBoxContainer" parent="VBoxContainer" unique_id=192680500]
+layout_mode = 2
+
+[node name="ModelSelector" type="OptionButton" parent="VBoxContainer/HBoxContainer" unique_id=1276823479]
+custom_minimum_size = Vector2(50, 0)
+layout_mode = 2
+
+[node name="ClearButton" type="Button" parent="VBoxContainer/HBoxContainer" unique_id=489092874]
+layout_mode = 2
+text = "🗑️"
+
+[node name="CompressButton" type="Button" parent="VBoxContainer/HBoxContainer" unique_id=1207682109]
+layout_mode = 2
+text = "✂️"
+
+[node name="SettingsButton" type="Button" parent="VBoxContainer/HBoxContainer" unique_id=1482525357]
+layout_mode = 2
+text = "⚙️ "
+
+[node name="InsertButton" type="Button" parent="VBoxContainer/HBoxContainer" unique_id=1911803781]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "插入代码到光标处"
+
+[node name="SendButton" type="Button" parent="VBoxContainer/HBoxContainer" unique_id=1927872483]
+layout_mode = 2
+text = "发送"
+
+[node name="HTTPRequest" type="HTTPRequest" parent="." unique_id=805744194]
+timeout = 120.0
+
+[node name="SettingsDialog" type="AcceptDialog" parent="." unique_id=747425815]
+oversampling_override = 1.0
+title = "AI 助手设置"
+position = Vector2i(0, 36)
+size = Vector2i(316, 269)
+ok_button_text = "确定"
+
+[node name="VBoxContainer" type="VBoxContainer" parent="SettingsDialog" unique_id=732883706]
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 308.0
+offset_bottom = 220.0
+theme_override_constants/separation = 10
+
+[node name="Label1" type="Label" parent="SettingsDialog/VBoxContainer" unique_id=1393171304]
+layout_mode = 2
+text = "API URL"
+
+[node name="ApiUrlInput" type="LineEdit" parent="SettingsDialog/VBoxContainer" unique_id=621047526]
+custom_minimum_size = Vector2(300, 0)
+layout_mode = 2
+
+[node name="Label2" type="Label" parent="SettingsDialog/VBoxContainer" unique_id=1803129140]
+layout_mode = 2
+text = "API Key:"
+
+[node name="ApiKeyInput" type="LineEdit" parent="SettingsDialog/VBoxContainer" unique_id=1950063010]
+custom_minimum_size = Vector2(300, 0)
+layout_mode = 2
+
+[node name="Label3" type="Label" parent="SettingsDialog/VBoxContainer" unique_id=645541755]
+layout_mode = 2
+text = "模型名称"
+
+[node name="ModelInput" type="LineEdit" parent="SettingsDialog/VBoxContainer" unique_id=1574290380]
+custom_minimum_size = Vector2(300, 0)
+layout_mode = 2
+
+[connection signal="pressed" from="VBoxContainer/HBoxContainer/SendButton" to="." method="_on_button_pressed"]
