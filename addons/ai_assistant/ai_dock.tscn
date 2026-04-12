@@ -180,6 +180,9 @@ tooltip_text = "发送 (Enter)"
 icon = SubResource("DPITexture_ny15o")
 flat = true
 
+[node name="StopButton" type="Button" parent="VBoxContainer/InputPanel/VBoxContainer/Actions" unique_id=85781719]
+layout_mode = 2
+
 [node name="HTTPRequest" type="HTTPRequest" parent="." unique_id=805744194]
 timeout = 120.0
 
@@ -220,5 +223,3 @@ text = "模型名称"
 [node name="ModelInput" type="LineEdit" parent="SettingsDialog/VBoxContainer" unique_id=1574290380]
 custom_minimum_size = Vector2(300, 0)
 layout_mode = 2
-
-[connection signal="pressed" from="VBoxContainer/InputPanel/VBoxContainer/Actions/SendButton" to="." method="_on_send_pressed"]
