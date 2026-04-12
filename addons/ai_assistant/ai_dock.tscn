@@ -66,6 +66,16 @@ Color(0.37254903, 1, 0.5921569, 1): Color(0.45, 0.95, 0.5, 1),
 Color(1, 0.8666667, 0.39607844, 1): Color(0.83, 0.78, 0.62, 1)
 }
 
+[sub_resource type="DPITexture" id="DPITexture_g07nt"]
+_source = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\"><rect width=\"10\" height=\"10\" x=\"3\" y=\"3\" fill=\"#e0e0e0\" rx=\"1\"/></svg>
+"
+saturation = 2.0
+color_map = {
+Color(1, 0.37254903, 0.37254903, 1): Color(1, 0.47, 0.42, 1),
+Color(0.37254903, 1, 0.5921569, 1): Color(0.45, 0.95, 0.5, 1),
+Color(1, 0.8666667, 0.39607844, 1): Color(0.83, 0.78, 0.62, 1)
+}
+
 [node name="AI助手" type="Control" unique_id=591429016]
 layout_mode = 3
 anchors_preset = 15
@@ -97,9 +107,11 @@ flat = true
 [node name="SessionSelector" type="OptionButton" parent="VBoxContainer/HBoxContainer_top" unique_id=2097912020]
 layout_mode = 2
 selected = 0
-item_count = 1
-popup/item_0/text = "你会些什么..."
+item_count = 2
+popup/item_0/text = "在test文件夹下帮我做..."
 popup/item_0/id = 0
+popup/item_1/text = "你会些什么..."
+popup/item_1/id = 1
 
 [node name="DeleteChatButton" type="Button" parent="VBoxContainer/HBoxContainer_top" unique_id=1469255323]
 custom_minimum_size = Vector2(28, 28)
@@ -111,7 +123,7 @@ flat = true
 [node name="ChatScroll" type="ScrollContainer" parent="VBoxContainer" unique_id=1433732887]
 layout_mode = 2
 size_flags_vertical = 3
-scroll_vertical = 582
+scroll_vertical = 6033
 horizontal_scroll_mode = 0
 
 [node name="MessageList" type="VBoxContainer" parent="VBoxContainer/ChatScroll" unique_id=2037395860]
@@ -169,7 +181,7 @@ popup/item_1/id = 1
 [node name="InsertButton" type="Button" parent="VBoxContainer/InputPanel/VBoxContainer/Actions" unique_id=1911803781]
 custom_minimum_size = Vector2(28, 28)
 layout_mode = 2
-tooltip_text = "插入最后一段代码"
+tooltip_text = "插入/替换为最后一段代码"
 icon = SubResource("DPITexture_gvj1a")
 flat = true
 
@@ -181,7 +193,12 @@ icon = SubResource("DPITexture_ny15o")
 flat = true
 
 [node name="StopButton" type="Button" parent="VBoxContainer/InputPanel/VBoxContainer/Actions" unique_id=85781719]
+visible = false
+custom_minimum_size = Vector2(28, 28)
 layout_mode = 2
+tooltip_text = "终止生成"
+icon = SubResource("DPITexture_g07nt")
+flat = true
 
 [node name="HTTPRequest" type="HTTPRequest" parent="." unique_id=805744194]
 timeout = 120.0
