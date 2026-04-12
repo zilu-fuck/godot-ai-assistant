@@ -2,6 +2,7 @@
 @tool
 extends Node
 class_name AIChatRenderer
+signal apply_code_requested(code: String)
 
 # ==========================================
 # 🧱 节点与状态引用
@@ -126,6 +127,16 @@ func _create_code_block(code_text: String, lang: String) -> PanelContainer:
 	lang_label.add_theme_color_override("font_color", Color("#888888"))
 	lang_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	toolbar.add_child(lang_label)
+	
+# 🌟 新增：专属的 Apply (应用) 按钮
+	var apply_btn = Button.new()
+	apply_btn.text = "Apply"
+	apply_btn.flat = true
+	apply_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	apply_btn.pressed.connect(func():
+		apply_code_requested.emit(code_text) # 点击时，把自己这块的代码发射出去
+	)
+	toolbar.add_child(apply_btn)
 
 	var copy_btn = Button.new()
 	copy_btn.text = "Copy"

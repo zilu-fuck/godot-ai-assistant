@@ -108,7 +108,7 @@ flat = true
 layout_mode = 2
 selected = 0
 item_count = 2
-popup/item_0/text = "在test文件夹下帮我做..."
+popup/item_0/text = "写一个登录功能..."
 popup/item_0/id = 0
 popup/item_1/text = "你会些什么..."
 popup/item_1/id = 1
@@ -123,7 +123,7 @@ flat = true
 [node name="ChatScroll" type="ScrollContainer" parent="VBoxContainer" unique_id=1433732887]
 layout_mode = 2
 size_flags_vertical = 3
-scroll_vertical = 6033
+scroll_vertical = 9627
 horizontal_scroll_mode = 0
 
 [node name="MessageList" type="VBoxContainer" parent="VBoxContainer/ChatScroll" unique_id=2037395860]
@@ -185,6 +185,13 @@ tooltip_text = "插入/替换为最后一段代码"
 icon = SubResource("DPITexture_gvj1a")
 flat = true
 
+[node name="DebugButton" type="Button" parent="VBoxContainer/InputPanel/VBoxContainer/Actions" unique_id=670187626]
+custom_minimum_size = Vector2(28, 28)
+layout_mode = 2
+tooltip_text = "一键分析剪贴板报错"
+icon = SubResource("DPITexture_klln7")
+flat = true
+
 [node name="SendButton" type="Button" parent="VBoxContainer/InputPanel/VBoxContainer/Actions" unique_id=1927872483]
 custom_minimum_size = Vector2(28, 28)
 layout_mode = 2
@@ -240,3 +247,16 @@ text = "模型名称"
 [node name="ModelInput" type="LineEdit" parent="SettingsDialog/VBoxContainer" unique_id=1574290380]
 custom_minimum_size = Vector2(300, 0)
 layout_mode = 2
+
+[node name="DiffDialog" type="AcceptDialog" parent="." unique_id=1723544337]
+oversampling_override = 1.0
+title = "代码审查"
+position = Vector2i(0, 36)
+ok_button_text = "确认合并"
+
+[node name="DiffText" type="RichTextLabel" parent="DiffDialog" unique_id=1972175424]
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 92.0
+offset_bottom = 51.0
+bbcode_enabled = true

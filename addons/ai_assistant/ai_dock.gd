@@ -17,13 +17,17 @@ extends Control
 @onready var settings_button = $VBoxContainer/InputPanel/VBoxContainer/Toolbar/SettingsButton
 @onready var model_selector = $VBoxContainer/InputPanel/VBoxContainer/Actions/ModelSelector
 @onready var insert_button = $VBoxContainer/InputPanel/VBoxContainer/Actions/InsertButton
-@onready var send_button = $VBoxContainer/InputPanel/VBoxContainer/Actions/SendButton
 @onready var stop_button = $VBoxContainer/InputPanel/VBoxContainer/Actions/StopButton 
+@onready var debug_button = $VBoxContainer/InputPanel/VBoxContainer/Actions/DebugButton
+@onready var send_button = $VBoxContainer/InputPanel/VBoxContainer/Actions/SendButton
 
 @onready var settings_dialog = $SettingsDialog
 @onready var api_url_input = $SettingsDialog/VBoxContainer/ApiUrlInput
 @onready var api_key_input = $SettingsDialog/VBoxContainer/ApiKeyInput
 @onready var model_input = $SettingsDialog/VBoxContainer/ModelInput
+
+@onready var diff_dialog = $DiffDialog
+@onready var diff_text = $DiffDialog/DiffText
 
 # ==========================================
 # 🧩 核心引擎与组件模块
@@ -51,6 +55,7 @@ var is_compressing: bool = false
 var stream_temp_node: RichTextLabel = null
 var current_ai_content := ""
 var current_ai_reasoning := ""
+var pending_apply_code: String = ""
 
 # ==========================================
 # 🚀 初始化逻辑
@@ -65,11 +70,13 @@ func _ready():
 	
 	net_client.chunk_received.connect(_on_chunk_received)
 	net_client.stream_completed.connect(_on_stream_completed)
+	renderer.apply_code_requested.connect(_on_apply_code_requested)
 	
 	# UI 信号
 	send_button.pressed.connect(_on_send_pressed)
 	stop_button.pressed.connect(_on_stop_pressed)
-	insert_button.pressed.connect(_on_insert_pressed)
+	#insert_button.pressed.connect(_on_insert_pressed)
+	insert_button.visible = false
 	settings_button.pressed.connect(_on_settings_button_pressed)
 	clear_button.pressed.connect(_on_clear_pressed)
 	compress_button.pressed.connect(_on_compress_pressed)
@@ -78,6 +85,8 @@ func _ready():
 	settings_dialog.confirmed.connect(_on_settings_dialog_confirmed)
 	delete_chat_button.pressed.connect(_on_delete_chat_pressed)
 	model_selector.item_selected.connect(_on_model_selected)
+	debug_button.pressed.connect(_on_debug_pressed)
+	diff_dialog.confirmed.connect(_on_diff_confirmed)
 
 	stop_button.visible = false
 	_setup_modern_ui()
@@ -96,15 +105,29 @@ func _setup_modern_ui():
 	var gui = EditorInterface.get_base_control()
 	var all_icon_buttons = {
 		new_chat_button: "Add", delete_chat_button: "Remove", clear_button: "Clear", compress_button: "Scissors",
-		settings_button: "Tools", insert_button: "Edit", send_button: "Play", stop_button: "Stop"
+		settings_button: "Tools", insert_button: "Edit", send_button: "Play", stop_button: "Stop",
+		debug_button: "Debug"
 	}
 	for btn in all_icon_buttons:
 		btn.icon = gui.get_theme_icon(all_icon_buttons[btn], "EditorIcons")
 		btn.text = ""; btn.flat = true; btn.custom_minimum_size = Vector2(28, 28)
+		_set_tooltip(btn) # 🌟 确保调用了提示词分配函数
+
+func _set_tooltip(btn):
+	if btn == insert_button: btn.tooltip_text = "插入/替换为最后一段代码"
+	elif btn == send_button: btn.tooltip_text = "发送 (Enter)"
+	elif btn == stop_button: btn.tooltip_text = "终止生成"
+	elif btn == clear_button: btn.tooltip_text = "清空当前会话内容"
+	elif btn == compress_button: btn.tooltip_text = "总结记忆以节省上下文"
+	elif btn == settings_button: btn.tooltip_text = "API设置"
+	elif btn == new_chat_button: btn.tooltip_text = "开启新对话"
+	elif btn == delete_chat_button: btn.tooltip_text = "删除此对话"
+	elif btn == debug_button: btn.tooltip_text = "一键分析剪贴板报错"
 
 func _set_ui_busy(busy: bool):
 	send_button.visible = not busy; stop_button.visible = busy
-	new_chat_button.disabled = busy; clear_button.disabled = busy; model_selector.disabled = busy
+	new_chat_button.disabled = busy; clear_button.disabled = busy; model_selector.disabled = busy;
+	debug_button.disabled = busy
 
 # ==========================================
 # 💬 发送逻辑与工作流
@@ -210,11 +233,48 @@ func get_smart_script_context():
 		return {"text": ed.text, "is_selected": false}
 	return {"text": "", "is_selected": false}
 
-func _on_insert_pressed():
-	if renderer.last_generated_code == "": return
+# ==========================================
+# 🔍 差异化防误覆盖系统 (Diff & Merge)
+# ==========================================
+func _on_apply_code_requested(target_code: String):
+	# 收到特定代码块发来的代码，进行 Diff 审查
+	var context_data = get_smart_script_context()
+	
+	if not context_data["is_selected"] or context_data["text"].is_empty():
+		_apply_code(target_code)
+		return
+	pending_apply_code = target_code
+
+	_show_diff(context_data["text"], target_code)
+
+func _show_diff(old_text: String, new_text: String):
+	# 1. 字体与字号
+	var gui = EditorInterface.get_base_control()
+	if gui.has_theme_font("source", "EditorFonts"):
+		diff_text.add_theme_font_override("normal_font", gui.get_theme_font("source", "EditorFonts"))
+	
+	# 2. 🌟 关键修复：把行间距拉大到 10-12 像素
+	# 这样色块之间会有明显的“深色鸿沟”，彻底解决重叠感
+	diff_text.add_theme_constant_override("line_separation", 10) 
+	
+	# 3. 增加左侧边距，防止文字顶格
+	diff_text.add_theme_constant_override("outline_size", 0)
+	
+	var final_bbcode = _generate_diff_bbcode(old_text, new_text)
+	diff_text.text = final_bbcode
+	
+	# 4. 让弹窗稍微修长一点，更有代码审查的感觉
+	diff_dialog.popup_centered_clamped(Vector2(900, 700))
+
+func _on_diff_confirmed():
+	# 用户点击了“确认合并”，真正执行修改
+	_apply_code(pending_apply_code) 
+	pending_apply_code = ""
+
+func _apply_code(code: String):
 	var ce = EditorInterface.get_script_editor().get_current_editor()
 	if ce and ce.get_base_editor() is CodeEdit:
-		ce.get_base_editor().insert_text_at_caret(renderer.last_generated_code + "\n")
+		ce.get_base_editor().insert_text_at_caret(code + "\n")
 
 # ==========================================
 # ⚙️ 界面杂项事件
@@ -257,3 +317,62 @@ func _on_settings_button_pressed():
 func _input(ev):
 	if input_box.has_focus() and ev is InputEventKey and ev.pressed and ev.keycode == KEY_ENTER and not ev.shift_pressed:
 		_on_send_pressed(); get_viewport().set_input_as_handled()
+	
+	# ==========================================
+# 🐛 一键 Debug 逻辑
+# ==========================================
+func _on_debug_pressed():
+	# 1. 获取剪贴板里的报错信息
+	var error_text = DisplayServer.clipboard_get().strip_edges()
+	
+	if error_text == "":
+		renderer.render_message("assistant", "[color=#E5C07B]⚠️ 你的剪贴板是空的。请先在 Godot 控制台复制一段报错信息，再点击此按钮。[/color]")
+		return
+		
+	# 2. 拼装智能 Prompt
+	var prompt = "我在运行游戏时遇到了以下报错：\n```text\n" + error_text + "\n```\n"
+	
+	var context_data = get_smart_script_context()
+	if not context_data["text"].is_empty():
+		prompt += "这是相关的代码段：\n```gdscript\n" + context_data["text"] + "\n```\n"
+		
+	prompt += "请帮我深度分析导致这个报错的原因，并给出修复方案。"
+	
+	# 3. 自动填入输入框并触发发送
+	input_box.text = prompt
+	_on_send_pressed()
+
+# ==========================================
+# 🧮 核心算法：逐行差异对比 (Line-by-Line Diff)
+# ==========================================
+func _generate_diff_bbcode(old_text: String, new_text: String) -> String:
+	var old_lines = old_text.split("\n")
+	var new_lines = new_text.split("\n")
+	var bbcode = "[b][color=#E5C07B]⚠️ 代码改动预览[/color][/b]\n\n"
+	
+	var i = 0
+	var j = 0
+	
+	# 🌟 换用更加低饱和度、高级的暗色调，减少视觉冲击
+	var bg_red = "#442b30"   # 暗调玫瑰红
+	var bg_green = "#2b4430" # 暗调森林绿
+	var fg_red = "#ff959c"   # 柔和红
+	var fg_green = "#b8ffad" # 柔和绿
+
+	while i < old_lines.size() or j < new_lines.size():
+		# 相同行
+		if i < old_lines.size() and j < new_lines.size() and old_lines[i].strip_edges() == new_lines[j].strip_edges():
+			bbcode += "      " + old_lines[i] + "\n"
+			i += 1
+			j += 1
+		# 新增行
+		elif j < new_lines.size() and (i >= old_lines.size() or not new_lines[j] in old_lines.slice(i, i + 5)):
+			# 🌟 技巧：在背景色块前后多加一点空格，并确保 \n 在标签外
+			bbcode += "[bgcolor=" + bg_green + "][color=" + fg_green + "]  +   " + new_lines[j] + "  [/color][/bgcolor]\n"
+			j += 1
+		# 删除行
+		elif i < old_lines.size():
+			bbcode += "[bgcolor=" + bg_red + "][color=" + fg_red + "]  -   " + old_lines[i] + "  [/color][/bgcolor]\n"
+			i += 1
+	
+	return bbcode
