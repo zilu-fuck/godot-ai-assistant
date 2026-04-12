@@ -437,5 +437,84 @@ func _input(event):
 			get_viewport().set_input_as_handled()
 
 func _on_compress_pressed():
-	# 简化版的压缩逻辑，渲染时按正常流程走
-	pass
+	if current_session_id == "" or all_sessions.is_empty(): 
+		return
+		
+	if is_compressing: 
+		return
+
+	var history = all_sessions[current_session_id]["history"]
+	
+	# 如果历史对话不超过 6 条（3轮），没有太大的压缩必要
+	if history.size() <= 6:
+		var tip = _create_text_node("[color=#888888][i]当前对话较短，无需压缩。[/i][/color]")
+		message_list.add_child(tip)
+		await get_tree().create_timer(2.0).timeout
+		if is_instance_valid(tip): tip.queue_free()
+		return
+
+	is_compressing = true
+	_set_ui_busy(true)
+
+	# 1. 在 UI 上给出明显的反馈
+	var loading_node = _create_text_node("[color=#E5C07B][i]🧠 正在提炼历史记忆，释放上下文空间...[/i][/color]")
+	message_list.add_child(loading_node)
+	await get_tree().process_frame
+	chat_scroll.scroll_vertical = chat_scroll.get_v_scroll_bar().max_value
+
+	# 2. 拆分历史记录：保留最近的 4 条（即最近2轮对话），其余的拿去压缩
+	var keep_count = 4
+	var to_compress = history.slice(0, history.size() - keep_count)
+	var to_keep = history.slice(history.size() - keep_count)
+
+	# 3. 构建让 AI 做总结的 Prompt
+	var compress_prompt = "作为一名专业的 Godot 程序员，请总结以下我们过去的对话。你的目标是生成一份高密度的'备忘录'，供你之后查阅。请务必提取：\n1. 我当前的项目目标和核心需求。\n2. 我们已经确定的代码结构、命名规范或关键类名。\n3. 我们刚刚解决过的关键 Bug 或避坑指南。\n用简短的列表形式返回，不要废话。\n\n---历史对话记录---\n"
+	
+	for msg in to_compress:
+		var role_name = "用户" if msg["role"] == "user" else "AI"
+		# 截断过长的单条消息，防止被要压缩的内容本身把 Token 撑爆
+		compress_prompt += "【%s】: %s\n" % [role_name, msg["content"].left(800)] 
+
+	# 4. 创建后台临时请求
+	var compress_req = HTTPRequest.new()
+	add_child(compress_req)
+
+	# 无论当前选什么模型，压缩总结建议用 deepseek-chat (V3)，因为它速度快且足够聪明，没必要用 R1 慢吞吞地思考
+	var body = {
+		"model": "deepseek-chat",
+		"messages": [{"role": "user", "content": compress_prompt}],
+		"temperature": 0.1 # 使用极低的温度，保证总结的客观事实准确性
+	}
+	var headers = ["Content-Type: application/json", "Authorization: Bearer " + current_api_key]
+
+	# 5. 处理压缩完成的回调
+	compress_req.request_completed.connect(func(_result, response_code, _h, res_body):
+		if is_instance_valid(loading_node):
+			loading_node.queue_free()
+		is_compressing = false
+		_set_ui_busy(false)
+
+		if response_code == 200:
+			var json = JSON.parse_string(res_body.get_string_from_utf8())
+			var summary = json["choices"][0]["message"]["content"]
+
+			# 将总结打包成一条特殊的 AI 消息
+			var memory_msg = {
+				"role": "assistant",
+				"content": "✨ [b][color=#E5C07B]已压缩早期上下文。当前记忆备忘录：[/color][/b]\n" + summary
+			}
+			
+			# 重构本地历史数据：新记忆 + 保留的最近对话
+			all_sessions[current_session_id]["history"] = [memory_msg] + to_keep
+			_save_current_to_memory()
+
+			# 重新加载 UI 显示
+			_load_session_to_ui(current_session_id)
+		else:
+			_render_message("assistant", "[color=#E06C75]压缩记忆失败 (状态码: " + str(response_code) + ")[/color]")
+
+		# 清理临时节点
+		compress_req.queue_free()
+	)
+
+	compress_req.request(current_api_url, headers, HTTPClient.METHOD_POST, JSON.stringify(body))
