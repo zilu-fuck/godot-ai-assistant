@@ -1,101 +1,226 @@
-# Godot AI Assistant
+# 必看
 
-这是一个面向 Godot 4 编辑器的 AI 助手插件，当前实现已经完成 1-8 阶段的首轮重构落地：保留原有 Dock 交互外壳，同时把运行时链路拆成了独立模块，方便后续继续扩展 provider、动作执行和更强的 agent 能力。
+## 这是什么项目
 
-## 当前能力
+这是一个面向 **Godot 4 编辑器** 的 AI 助手插件项目，插件名为 `AI Assistant`。  
+它已经在当前项目中启用，打开项目后会作为一个编辑器 Dock 面板出现在右侧。
 
-- 多会话聊天与本地持久化
-- 流式输出与错误回传
-- 当前脚本 / 选区上下文注入
-- 内置规则 + 用户规则 + 项目规则 + 本地目录规则加载
-- `@include` 规则展开与循环引用报错
-- 结构化会话记忆与自动压缩
-- Provider profile / adapter 抽象
-- `Apply` 动作统一走 `ActionExecutor`
-- 项目文件索引与 Git 状态摘要注入
+这个项目的目标不是单纯做“聊天窗口”，而是把 AI 能力直接接到 Godot 编辑器里，让它能结合当前脚本、选中代码、当前场景、项目文件结构、Git 状态和规则文件来辅助开发。
 
-## 当前目录结构
+仓库里还附带了一个简单测试目录 `test/`，可以用于配合插件做基础体验和调试。
 
-```text
-addons/ai_assistant/
-  ai_assistant.gd
-  ai_chat_renderer.gd
-  ai_dock.gd
-  ai_dock.tscn
-  ai_net_client.gd
-  ai_storage.gd
-  actions/
-    ai_action_executor.gd
-  core/
-    ai_runtime.gd
-  memory/
-    ai_memory_manager.gd
-  net/
-    ai_provider_adapter.gd
-    ai_provider_profiles.gd
-  project/
-    ai_git_context.gd
-    ai_project_indexer.gd
-  prompt/
-    ai_context_builder.gd
-    ai_message_normalizer.gd
-    ai_prompt_builder.gd
-    ai_rules_loader.gd
-```
+## 当前已经实现的功能
 
-## 模块职责
+根据当前仓库代码，项目已经具备这些核心能力：
 
+- 多会话聊天，支持新建、切换、删除会话
+- 会话和配置本地持久化保存
+- AI 回复支持流式输出，并且可以手动停止
+- 自动读取当前脚本内容，或优先读取当前选中的代码片段
+- 自动注入当前场景路径、项目文件索引、Git 摘要等上下文
+- 支持规则系统
+- 支持内置规则、用户规则、项目规则、目录局部规则叠加
+- 支持 `@include` 引入其他规则文件，并检测循环引用
+- 支持会话记忆与会话压缩，减少上下文过长问题
+- 支持上下文占用预估，并用环形指示器提示风险
+- 支持多种模型配置，包括 DeepSeek 和 OpenAI Compatible 接口
+- 支持把 AI 生成的代码直接应用到当前脚本
+- 如果有代码选区，会先展示 diff 预览再确认替换
+- 支持从剪贴板读取报错信息，让 AI 分析报错原因
+
+## 项目结构一眼看懂
+
+当前核心代码都在 `addons/ai_assistant/` 下：
+
+- `ai_assistant.gd`
+  Godot 编辑器插件入口，负责把 Dock 挂到编辑器右侧
 - `ai_dock.gd`
-  负责 UI 状态、会话切换、按钮事件与渲染协调。
+  插件主界面，负责聊天 UI、会话管理、设置、发送、停止、压缩、调试等交互
+- `ai_net_client.gd`
+  负责向模型服务发起流式请求
+- `ai_storage.gd`
+  负责保存 API 配置和聊天记录
 - `core/ai_runtime.gd`
-  负责发送编排、上下文收集、规则加载、provider 请求构建。
+  负责真正的请求组织流程，是运行时主链路
 - `prompt/`
-  负责规则、上下文、消息归一化与最终 prompt 组装。
+  负责规则加载、上下文构建、消息整理、最终 prompt 组装
 - `memory/ai_memory_manager.gd`
-  负责结构化记忆、自动压缩和摘要导出。
+  负责会话记忆和压缩
 - `net/ai_provider_profiles.gd`
-  维护模型配置和能力声明。
+  管理不同模型的配置档案
 - `net/ai_provider_adapter.gd`
-  把统一 runtime request 转成具体 provider payload。
+  把统一请求转成具体 provider 需要的 payload
 - `actions/ai_action_executor.gd`
-  统一处理插入、替换和预览确认后的应用动作。
-- `project/`
-  提供项目索引和 Git 摘要，作为系统上下文的一部分注入请求。
+  把 AI 生成的代码插入或替换到当前脚本
+- `project/ai_project_indexer.gd`
+  扫描项目文件，生成项目地图摘要
+- `project/ai_git_context.gd`
+  读取当前 Git 分支和工作区变更摘要
 
-## 如何新增模型
+## 这个项目怎么用
 
-如果是同类兼容接口，优先在 `addons/ai_assistant/net/ai_provider_profiles.gd` 里新增条目：
+### 1. 打开项目
 
-```gdscript
-"your-model-id": {
-	"name": "显示名称",
-	"provider": "openai_compatible",
-	"default_url": "https://api.openai.com/v1/chat/completions",
-	"use_system_role": true,
-	"temperature": 0.7,
-	"supports_system_role": true,
-	"supports_reasoning_delta": false,
-	"supports_streaming": true,
-	"supports_tool_calls": true,
-	"supports_cache_hints": false,
-}
-```
+用 **Godot 4** 打开当前仓库。  
+从 `project.godot` 可以看到项目当前使用的是 Godot `4.6` 特性，并且插件已经启用。
 
-如果是新的 payload 格式，再补 `addons/ai_assistant/net/ai_provider_adapter.gd` 的适配分支即可。
+### 2. 找到插件面板
 
-## 阶段进度
+项目打开后，右侧会出现 `AI Assistant` 对应的 Dock 面板。
 
-- 阶段 1：发送链路从 `ai_dock.gd` 拆到 `AIRuntime`
-- 阶段 2：Prompt / Context / Message Normalizer 模块化
-- 阶段 3：规则系统与 `@include` 支持
-- 阶段 4：结构化记忆与自动压缩
-- 阶段 5：Provider profile / adapter 抽象
-- 阶段 6：统一动作执行器初版
-- 阶段 7：项目索引与 Git 上下文注入
-- 阶段 8：UI 调试信息收口与 README 对齐
+如果没有看到：
 
-## 当前限制
+- 先确认项目已经正常加载
+- 再确认 `project.godot` 里的编辑器插件启用项没有被改掉
 
-- 还没有完整的工具调用协议层
-- `ActionExecutor` 目前只覆盖插入和替换选区
-- 本环境未集成 `godot` CLI，暂时只能做静态脚本检查，无法在这里直接跑编辑器级自动验证
+### 3. 配置模型接口
+
+点击工具栏里的设置按钮，填写：
+
+- `API URL`
+- `API Key`
+- `Model`
+
+默认配置偏向 DeepSeek：
+
+- 默认地址是 `https://api.deepseek.com/chat/completions`
+- 默认模型是 `deepseek-chat`
+
+当前代码中内置了这些模型档案：
+
+- `deepseek-chat`
+- `deepseek-reasoner`
+- `openai-chat`
+
+如果你填的是自定义模型名，项目也会根据模型名和接口地址尝试推断它属于 DeepSeek Compatible 还是 OpenAI Compatible。
+
+### 4. 开始提问
+
+常见使用方式：
+
+- 打开一个脚本后直接提问，让 AI 根据整个脚本给建议
+- 选中一段代码后提问，让 AI 只围绕选中的部分分析或改写
+- 打开某个场景后提问，让 AI 带上当前场景路径信息一起分析
+
+输入框里输入内容后：
+
+- `Enter` 发送
+- `Shift + Enter` 换行
+
+### 5. 应用 AI 生成的代码
+
+当 AI 返回代码块后，可以使用 `Apply` 类能力把代码写回编辑器。
+
+当前行为规则很明确：
+
+- 如果当前脚本里有选中代码，插件会把生成结果作为“替换选区”处理
+- 替换前会先弹出 diff 预览，确认后才真正写入
+- 如果没有选区，就会把代码插入到当前光标位置
+
+### 6. 分析运行报错
+
+插件有一个调试按钮，会直接读取系统剪贴板中的报错文本。
+
+推荐用法：
+
+1. 先把 Godot 控制台报错复制到剪贴板
+2. 回到插件点击调试按钮
+3. 插件会自动拼出一段“报错 + 当前脚本上下文”的分析请求
+4. AI 返回后再根据建议修改代码
+
+### 7. 管理上下文和会话
+
+插件支持：
+
+- 新建会话
+- 删除会话
+- 清空当前会话
+- 手动压缩会话记忆
+
+如果会话太长，插件也会根据上下文占用情况自动判断是否需要压缩历史内容。
+
+## AI 在回答时会拿到哪些上下文
+
+这是这个项目最有价值的部分之一。
+
+当前实现里，AI 请求不只是“用户输入”，还会尽量拼接这些信息：
+
+- 当前日期时间
+- 当前脚本路径
+- 当前场景路径
+- 当前脚本全文，或者当前选中的代码
+- 项目文件索引摘要
+- Git 分支和工作区变更摘要
+- 已加载的规则文件内容
+- 当前会话的历史消息
+- 会话记忆压缩后的摘要
+
+也就是说，这个插件的定位是“带项目上下文的 Godot 编辑器内 AI 助手”，而不是普通聊天框。
+
+## 规则系统怎么用
+
+项目已经实现了分层规则加载，优先用于约束 AI 的回答风格和行为。
+
+当前会读取这些规则来源：
+
+- 内置规则
+- `user://ai_assistant_rules.md`
+- `res://AI_ASSISTANT.md`
+- 当前脚本所在目录及其父目录中的 `AI_ASSISTANT.local.md`
+
+规则支持 `@include 路径` 的写法，用来拆分规则文件。  
+如果出现循环包含，加载器会报出错误提示。
+
+如果你想给整个项目加统一规范，最直接的做法就是在项目根目录放一个：
+
+`AI_ASSISTANT.md`
+
+如果你只想约束某个模块，可以在对应目录放：
+
+`AI_ASSISTANT.local.md`
+
+## 本地数据保存在哪里
+
+当前代码里，本地数据使用 Godot 的 `user://` 路径保存：
+
+- 配置文件：`user://ai_assistant_config.cfg`
+- 聊天会话：`user://ai_sessions.json`
+
+这意味着：
+
+- API Key 不会写回仓库源码目录
+- 会话记录默认也是本地用户数据，不会直接进 Git
+
+## 仓库里现在适合拿来做什么
+
+从当前内容来看，这个项目已经比较适合以下场景：
+
+- 在 Godot 编辑器里做 AI 辅助编程
+- 基于当前脚本或选区做代码解释、重写、补全
+- 快速分析控制台报错
+- 给项目接入规则驱动的 AI 开发流程
+- 继续扩展 provider、上下文系统、动作执行器
+
+## 当前已知边界
+
+从仓库现状来看，目前也有一些明确边界：
+
+- 代码应用动作目前主要是“插入光标处”或“替换选区”
+- 还不是完整的通用工具调用框架
+- 项目更偏编辑器内辅助开发，不是运行时游戏内 AI
+- 仓库里目前没有看到完整的自动化测试体系
+
+## 建议的新手上手顺序
+
+如果你是第一次接手这个项目，建议按这个顺序理解：
+
+1. 先看 `addons/ai_assistant/ai_assistant.gd`
+2. 再看 `addons/ai_assistant/ai_dock.gd`
+3. 然后看 `addons/ai_assistant/core/ai_runtime.gd`
+4. 再顺着看 `prompt/`、`memory/`、`net/`、`actions/`
+5. 最后结合 `test/` 下的场景和脚本做实际体验
+
+## 一句话总结
+
+这个项目本质上是一个已经接入 Godot 编辑器工作流的 AI 编码助手插件。  
+它的核心价值不在“能聊天”，而在“能理解当前 Godot 项目上下文，并把生成结果直接作用到编辑器中的脚本开发流程里”。
