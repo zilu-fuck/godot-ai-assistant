@@ -1,89 +1,101 @@
-# 🤖 Godot AI Assistant 操作手册 (v1.2.0)
+# Godot AI Assistant
 
-## 📖 简介
-本插件是专为 **Godot 4** 引擎设计的深度集成式 AI 编程助手。在具备项目全局感知与智能 Token 节省算法的基础上，v1.2.0 版本引入了**现代化 Cursor 风格渲染引擎**与**异步无感上下文压缩技术**，为您带来极致流畅的沉浸式 AI 辅助编程体验。
+这是一个面向 Godot 4 编辑器的 AI 助手插件，当前实现已经完成 1-8 阶段的首轮重构落地：保留原有 Dock 交互外壳，同时把运行时链路拆成了独立模块，方便后续继续扩展 provider、动作执行和更强的 agent 能力。
 
----
+## 当前能力
 
-## 🏗️ 界面布局
-插件界面采用紧凑的垂直流式布局，完美适配编辑器侧边栏（Dock），分为三个核心交互区域：
+- 多会话聊天与本地持久化
+- 流式输出与错误回传
+- 当前脚本 / 选区上下文注入
+- 内置规则 + 用户规则 + 项目规则 + 本地目录规则加载
+- `@include` 规则展开与循环引用报错
+- 结构化会话记忆与自动压缩
+- Provider profile / adapter 抽象
+- `Apply` 动作统一走 `ActionExecutor`
+- 项目文件索引与 Git 状态摘要注入
 
-### 1. 顶部：会话管理栏 (Session Management)
-* **会话选择器 (Dropdown)**：实时切换历史对话。
-* **智能命名**：系统自动抓取首句提问的前 12 个字符作为标题，支持自动持久化。
-* **新建按钮 (+)**：立即开启新对话，旧对话自动存入本地 JSON。
-* **删除按钮 (❌)**：永久移除当前会话存档。
+## 当前目录结构
 
-### 2. 中间：沉浸式交互区 (Chat Display) *[v1.2.0 重大更新]*
-* **现代化代码面板**：采用类似 Cursor 的深色沉浸式代码块设计，支持语言自动识别与**一键复制 (Copy)** 功能，代码阅读与搬运更加丝滑。
-* **动态打字机与思考反馈**：内置动态“思考中...”加载动画。针对深度推理模型（如 DeepSeek-R1），系统会解析 `reasoning_content`，以灰色斜体实时展示 AI 的思维链过程，缓解长输出等待焦虑。
-* **自适应富文本渲染**：精准的 Markdown 正则解析，文本与代码块分离渲染，支持横向撑满自适应排版。
+```text
+addons/ai_assistant/
+  ai_assistant.gd
+  ai_chat_renderer.gd
+  ai_dock.gd
+  ai_dock.tscn
+  ai_net_client.gd
+  ai_storage.gd
+  actions/
+    ai_action_executor.gd
+  core/
+    ai_runtime.gd
+  memory/
+    ai_memory_manager.gd
+  net/
+    ai_provider_adapter.gd
+    ai_provider_profiles.gd
+  project/
+    ai_git_context.gd
+    ai_project_indexer.gd
+  prompt/
+    ai_context_builder.gd
+    ai_message_normalizer.gd
+    ai_prompt_builder.gd
+    ai_rules_loader.gd
+```
 
-### 3. 底部：核心控制栏 (Control Dock)
-* **模型画像切换**：在 `Chat` 与 `Reasoner` 模式间一键切换，系统自动适配不同的 System Prompt 与采样温度。
-* **清空 (🗑️)**：清除当前会话显示内容与内存历史。
-* **压缩 (✂️)**：**核心优化功能**。采用“滑动窗口+记忆摘要”算法。后台静默调用 AI 浓缩长对话，生成“记忆备忘录”，在保留背景的同时大幅节省 Token（详见核心技术特性）。
-* **设置 (⚙️)**：管理 API URL、API Key 及模型版本。
-* **插入代码**：精准提取 AI 生成的最后一段 `gdscript` 代码块，并一键注入到编辑器当前光标位置。
+## 模块职责
 
----
+- `ai_dock.gd`
+  负责 UI 状态、会话切换、按钮事件与渲染协调。
+- `core/ai_runtime.gd`
+  负责发送编排、上下文收集、规则加载、provider 请求构建。
+- `prompt/`
+  负责规则、上下文、消息归一化与最终 prompt 组装。
+- `memory/ai_memory_manager.gd`
+  负责结构化记忆、自动压缩和摘要导出。
+- `net/ai_provider_profiles.gd`
+  维护模型配置和能力声明。
+- `net/ai_provider_adapter.gd`
+  把统一 runtime request 转成具体 provider payload。
+- `actions/ai_action_executor.gd`
+  统一处理插入、替换和预览确认后的应用动作。
+- `project/`
+  提供项目索引和 Git 摘要，作为系统上下文的一部分注入请求。
 
-## 🚀 核心技术特性
+## 如何新增模型
 
-### 1. 异步无感上下文压缩 (Asynchronous Context Compression) *[v1.2.0 新增]*
-当对话历史过长导致 API 计费飙升或 AI 出现“遗忘”时，使用压缩功能：
-* **滑动窗口保留短期记忆**：算法自动剥离早期历史记录，但**强制保留最近 2 轮对话**，确保压缩后你依然能顺畅地就刚讨论的问题追问。
-* **零打断后台执行**：通过生成独立的临时 `HTTPRequest` 进行记忆提炼，不占用主聊天通道，全程在后台静默运行。
-* **智能模型降级约束**：压缩任务会自动强制调用高效率的 `deepseek-chat` 模型，并将温度（Temperature）降至 `0.1`，确保摘要内容客观准确，不跑偏。
-* **可视化备忘录**：压缩完成后，会在界面插入一条特殊的 AI 记忆流，展示提取的“核心需求、已定代码结构及避坑指南”。
+如果是同类兼容接口，优先在 `addons/ai_assistant/net/ai_provider_profiles.gd` 里新增条目：
 
-### 2. 全局项目地图 (Project Tree Mapping)
-插件会利用递归算法自动扫描 `res://` 目录（默认深度：3层）：
-* **AI 视野**：AI 能感知项目中的所有 `.gd` 脚本、`.tscn` 场景和 `.gdshader` 文件路径。
-* **智能过滤**：自动排除 `.godot`、`.import` 及 `addons` 等冗余目录，确保 AI 聚焦核心业务。
+```gdscript
+"your-model-id": {
+	"name": "显示名称",
+	"provider": "openai_compatible",
+	"default_url": "https://api.openai.com/v1/chat/completions",
+	"use_system_role": true,
+	"temperature": 0.7,
+	"supports_system_role": true,
+	"supports_reasoning_delta": false,
+	"supports_streaming": true,
+	"supports_tool_calls": true,
+	"supports_cache_hints": false,
+}
+```
 
-### 3. 上下文去重逻辑 (Context De-duplication)
-内置 **内容脏检查机制**，有效降低 API 配额消耗：
-* 若当前编辑的脚本未发生变化，插件仅发送状态占位符。
-* 仅在代码修改后才更新发送完整的代码上下文，避免冗余数据传输。
+如果是新的 payload 格式，再补 `addons/ai_assistant/net/ai_provider_adapter.gd` 的适配分支即可。
 
-### 4. 模型策略解耦 (Model Profiling)
-采用策略模式适配不同模型，无需硬编码逻辑：
-* **Chat 派系**：通过 `system` 角色注入项目全局背景。
-* **Reasoner 派系**：遵循官方建议，将开发指令与上下文前置于 `user` 消息中。
+## 阶段进度
 
----
+- 阶段 1：发送链路从 `ai_dock.gd` 拆到 `AIRuntime`
+- 阶段 2：Prompt / Context / Message Normalizer 模块化
+- 阶段 3：规则系统与 `@include` 支持
+- 阶段 4：结构化记忆与自动压缩
+- 阶段 5：Provider profile / adapter 抽象
+- 阶段 6：统一动作执行器初版
+- 阶段 7：项目索引与 Git 上下文注入
+- 阶段 8：UI 调试信息收口与 README 对齐
 
-## ⚙️ 快速上手
+## 当前限制
 
-### 1. API 初始化
-1. 点击插件底部 **⚙️** 图标。
-2. **API URL**：填写兼容 OpenAI 格式的地址（如 `https://api.deepseek.com/chat/completions`）。
-3. **API Key**：填入你的有效密钥。
-4. **模型名称**：默认为 `deepseek-chat`。配置将持久化保存于 `user://`。
-
-### 2. 开始协作
-在输入框描述你的需求，例如：“帮我给当前节点添加一个平滑移动的逻辑”。插件会自动带上你当前正在编写的脚本，让 AI 给出可直接运行的代码。点击代码块右上角的 **Copy**，或使用底部 **插入** 按钮即可快速应用。
-
----
-
-## 💾 数据存储说明
-插件数据遵循 Godot 标准，存储于 `user://` 目录下：
-* **配置文件**：`ai_assistant_config.cfg` (存储 API 敏感参数)
-* **对话存档**：`ai_sessions.json` (标准 JSON 格式)
-
----
-
-## 🛠️ 故障排除 (Troubleshooting)
-
-| 状态码 | 释义 | 解决建议 |
-| :--- | :--- | :--- |
-| **404** | 接口未找到 | 检查 URL 结尾是否缺少了 `/chat/completions`。 |
-| **401** | 身份验证失败 | 检查 API Key 是否正确、余额是否充足。 |
-| **Timeout** | 请求超时 | Reasoner 模式思考较慢。建议后续升级流式输出 (Streaming)。 |
-
----
-
-## 📢 声明
-**反馈联系**：s18971628274@163.com
-**AI 内容披露**：本插件的代码架构、核心算法逻辑及本手册主体内容由人工智能模型（Gemini）根据人工指令生成，经由开发者实测微调后发布。
+- 还没有完整的工具调用协议层
+- `ActionExecutor` 目前只覆盖插入和替换选区
+- 本环境未集成 `godot` CLI，暂时只能做静态脚本检查，无法在这里直接跑编辑器级自动验证
