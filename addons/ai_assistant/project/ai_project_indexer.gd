@@ -60,7 +60,7 @@ func _build_map_text(files: Array, recent_files: Array) -> String:
 	var scene_files: Array = []
 	var shader_files: Array = []
 	for file_path in files:
-		var path_str: String = String(file_path)
+		var path_str: String = str(file_path)
 		if path_str.ends_with(".gd"):
 			script_files.append(path_str)
 		elif path_str.ends_with(".tscn"):
@@ -74,7 +74,7 @@ func _build_map_text(files: Array, recent_files: Array) -> String:
 	if not relevant_files.is_empty():
 		lines.append("Relevant files:")
 		for file_path in relevant_files:
-			lines.append("- %s" % String(file_path))
+			lines.append("- %s" % str(file_path))
 
 	return "\n".join(lines)
 
@@ -98,3 +98,63 @@ func _pick_relevant_files(files: Array, recent_files: Array) -> Array:
 func _merge_recent_files(summary: Dictionary, recent_files: Array) -> Dictionary:
 	summary["recent_files"] = recent_files.duplicate()
 	return summary
+
+func extract_file_mentions(content: String, role: String = "user") -> Array:
+	var regex: RegEx = RegEx.new()
+	var error_code: int = regex.compile("([A-Za-z0-9_./\\\\-]+\\.(?:gd|tscn|gdshader))")
+	if error_code != OK:
+		return []
+
+	var mentions: Array = []
+	var seen: Dictionary = {}
+	for result in regex.search_all(content):
+		var mention: String = result.get_string(1).replace("\\", "/")
+		if seen.has(mention):
+			continue
+		seen[mention] = true
+		mentions.append({
+			"mention": mention,
+			"role": role,
+		})
+	return mentions
+
+func extract_latest_file_mentions(history: Array, preferred_role: String = "user") -> Array:
+	for index in range(history.size() - 1, -1, -1):
+		var message = history[index]
+		if not (message is Dictionary):
+			continue
+		if str(message.get("role", "")).strip_edges() != preferred_role:
+			continue
+
+		var mentions: Array = extract_file_mentions(str(message.get("content", "")), preferred_role)
+		if not mentions.is_empty():
+			return mentions
+	return []
+
+func match_project_file_path(mention: String, files: Array) -> String:
+	var normalized: String = mention.replace("\\", "/").strip_edges()
+	if normalized.is_empty():
+		return ""
+
+	for file_path in files:
+		var candidate: String = str(file_path)
+		if candidate == normalized:
+			return candidate
+		if normalized.begins_with("res://") and candidate == normalized.simplify_path():
+			return candidate
+		if candidate.ends_with("/" + normalized):
+			return candidate
+
+	var basename: String = normalized.get_file()
+	if basename.is_empty():
+		return ""
+
+	var matches: Array = []
+	for file_path in files:
+		var candidate: String = str(file_path)
+		if candidate.get_file() == basename:
+			matches.append(candidate)
+
+	if matches.size() == 1:
+		return matches[0]
+	return ""

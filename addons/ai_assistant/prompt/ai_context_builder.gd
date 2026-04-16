@@ -5,6 +5,13 @@ class_name AIContextBuilder
 var _project_indexer: AIProjectIndexer = AIProjectIndexer.new()
 var _git_context: AIGitContext = AIGitContext.new()
 
+const PRIORITY_SELECTION_TEXT: int = 110
+const PRIORITY_SCRIPT_TEXT: int = 100
+const PRIORITY_SESSION_MEMORY: int = 80
+const PRIORITY_GIT_SUMMARY: int = 65
+const PRIORITY_PROJECT_MAP: int = 55
+const PRIORITY_DYNAMIC_SYSTEM_CONTEXT: int = 95
+
 func build_runtime_context(memory: Dictionary = {}) -> Dictionary:
 	var script_context: Dictionary = get_script_context()
 	var recent_files: Array = []
@@ -13,17 +20,22 @@ func build_runtime_context(memory: Dictionary = {}) -> Dictionary:
 
 	var project_summary: Dictionary = _project_indexer.build_project_summary(recent_files)
 	var git_summary: Dictionary = _git_context.build_git_summary()
+	var script_path: String = get_current_script_path()
+	var scene_path: String = get_current_scene_path()
+	var current_date: String = "%s %s" % [Time.get_date_string_from_system(), Time.get_time_string_from_system()]
+	var context_items: Array = _build_context_items(script_context, memory, git_summary, project_summary, current_date, script_path, scene_path)
 
 	return {
-		"current_date": "%s %s" % [Time.get_date_string_from_system(), Time.get_time_string_from_system()],
-		"script_path": get_current_script_path(),
-		"scene_path": get_current_scene_path(),
+		"current_date": current_date,
+		"script_path": script_path,
+		"scene_path": scene_path,
 		"is_selected": script_context.get("is_selected", false),
 		"script_text": script_context.get("text", ""),
 		"project_summary": project_summary,
 		"project_map_text": String(project_summary.get("map_text", "")),
 		"git_summary": git_summary,
 		"git_text": String(git_summary.get("summary_text", "")),
+		"context_items": context_items,
 	}
 
 func get_script_context() -> Dictionary:
@@ -63,3 +75,83 @@ func get_current_scene_path() -> String:
 	if scene_root == null:
 		return ""
 	return scene_root.scene_file_path
+
+func _build_context_items(script_context: Dictionary, memory: Dictionary, git_summary: Dictionary, project_summary: Dictionary, current_date: String, script_path: String, scene_path: String) -> Array:
+	var items: Array = []
+	var dynamic_lines: Array = []
+
+	if not current_date.is_empty():
+		dynamic_lines.append("当前时间：%s" % current_date)
+	if not scene_path.is_empty():
+		dynamic_lines.append("当前场景：%s" % scene_path)
+	if not script_path.is_empty():
+		dynamic_lines.append("当前脚本：%s" % script_path)
+
+	_append_item(
+		items,
+		"dynamic_system_context",
+		"runtime",
+		PRIORITY_DYNAMIC_SYSTEM_CONTEXT,
+		"\n".join(dynamic_lines),
+		"system",
+		"动态系统上下文"
+	)
+
+	var script_text: String = String(script_context.get("text", ""))
+	var is_selected: bool = bool(script_context.get("is_selected", false))
+	_append_item(
+		items,
+		"selection_text" if is_selected else "script_text",
+		script_path if not script_path.is_empty() else "active_script",
+		PRIORITY_SELECTION_TEXT if is_selected else PRIORITY_SCRIPT_TEXT,
+		script_text,
+		"runtime",
+		"选中代码" if is_selected else "当前脚本"
+	)
+
+	_append_item(
+		items,
+		"session_memory",
+		"session_memory",
+		PRIORITY_SESSION_MEMORY,
+		String(memory.get("summary_text", "")),
+		"runtime",
+		"会话记忆"
+	)
+
+	_append_item(
+		items,
+		"git_summary",
+		"git",
+		PRIORITY_GIT_SUMMARY,
+		String(git_summary.get("summary_text", "")),
+		"system",
+		"Git 摘要"
+	)
+
+	_append_item(
+		items,
+		"project_map",
+		"project_index",
+		PRIORITY_PROJECT_MAP,
+		String(project_summary.get("map_text", "")),
+		"system",
+		"项目地图"
+	)
+
+	return items
+
+func _append_item(items: Array, kind: String, source: String, priority: int, text: String, target: String, title: String) -> void:
+	var cleaned: String = text.strip_edges()
+	if cleaned.is_empty():
+		return
+
+	items.append({
+		"kind": kind,
+		"source": source,
+		"priority": priority,
+		"text": cleaned,
+		"target": target,
+		"title": title,
+		"truncated": false,
+	})

@@ -107,12 +107,6 @@ flat = true
 
 [node name="SessionSelector" type="OptionButton" parent="VBoxContainer/HBoxContainer_top" unique_id=2097912020]
 layout_mode = 2
-selected = 0
-item_count = 2
-popup/item_0/text = "写一个登录功能..."
-popup/item_0/id = 0
-popup/item_1/text = "你会些什么..."
-popup/item_1/id = 1
 
 [node name="DeleteChatButton" type="Button" parent="VBoxContainer/HBoxContainer_top" unique_id=1469255323]
 custom_minimum_size = Vector2(28, 28)
@@ -176,12 +170,6 @@ layout_mode = 2
 [node name="ModelSelector" type="OptionButton" parent="VBoxContainer/InputPanel/VBoxContainer/Actions" unique_id=1276823479]
 custom_minimum_size = Vector2(50, 0)
 layout_mode = 2
-selected = 0
-item_count = 2
-popup/item_0/text = "DeepSeek Chat (V3)"
-popup/item_0/id = 0
-popup/item_1/text = "DeepSeek Reasoner (R1)"
-popup/item_1/id = 1
 
 [node name="InsertButton" type="Button" parent="VBoxContainer/InputPanel/VBoxContainer/Actions" unique_id=1911803781]
 custom_minimum_size = Vector2(28, 28)

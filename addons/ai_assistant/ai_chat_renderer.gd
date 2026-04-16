@@ -2,7 +2,7 @@
 extends Node
 class_name AIChatRenderer
 
-signal apply_code_requested(code: String)
+signal response_action_requested(block_index: int)
 
 var chat_scroll: ScrollContainer
 var message_list: VBoxContainer
@@ -17,7 +17,7 @@ func clear_chat() -> void:
 		child.queue_free()
 	last_generated_code = ""
 
-func render_message(role: String, content: String, reasoning: String = "") -> void:
+func render_message(role: String, content: String, reasoning: String = "", render_options: Dictionary = {}) -> void:
 	var role_node: RichTextLabel = RichTextLabel.new()
 	role_node.bbcode_enabled = true
 	role_node.fit_content = true
@@ -33,10 +33,14 @@ func render_message(role: String, content: String, reasoning: String = "") -> vo
 	if not reasoning.is_empty():
 		message_list.add_child(create_system_tip("[color=#5C6370][i]Thinking...\n%s[/i][/color]" % reasoning))
 
+	if role == "assistant":
+		last_generated_code = ""
+
 	var in_code_block: bool = false
 	var current_lang: String = ""
 	var text_buffer: String = ""
 	var code_buffer: String = ""
+	var code_block_index: int = 0
 	var lines: Array = content.split("\n")
 
 	for line in lines:
@@ -49,8 +53,12 @@ func render_message(role: String, content: String, reasoning: String = "") -> vo
 				current_lang = line.strip_edges().substr(3).strip_edges()
 			else:
 				if not code_buffer.strip_edges().is_empty():
-					message_list.add_child(_create_code_block(code_buffer.strip_edges(), current_lang))
-					last_generated_code = code_buffer.strip_edges()
+					var resolved_code: String = code_buffer.strip_edges()
+					var code_block_action: Dictionary = _resolve_code_block_action(render_options, code_block_index)
+					message_list.add_child(_create_code_block(resolved_code, current_lang, code_block_index, code_block_action))
+					if bool(code_block_action.get("show_primary_action", false)):
+						last_generated_code = resolved_code
+					code_block_index += 1
 				code_buffer = ""
 				in_code_block = false
 				current_lang = ""
@@ -63,8 +71,11 @@ func render_message(role: String, content: String, reasoning: String = "") -> vo
 	if not text_buffer.strip_edges().is_empty():
 		message_list.add_child(_create_text_node(text_buffer.strip_edges()))
 	if in_code_block and not code_buffer.strip_edges().is_empty():
-		message_list.add_child(_create_code_block(code_buffer.strip_edges(), current_lang))
-		last_generated_code = code_buffer.strip_edges()
+		var trailing_code: String = code_buffer.strip_edges()
+		var trailing_action: Dictionary = _resolve_code_block_action(render_options, code_block_index)
+		message_list.add_child(_create_code_block(trailing_code, current_lang, code_block_index, trailing_action))
+		if bool(trailing_action.get("show_primary_action", false)):
+			last_generated_code = trailing_code
 
 	_scroll_to_bottom()
 
@@ -100,7 +111,7 @@ func _create_text_node(txt: String) -> RichTextLabel:
 	lbl.text = txt
 	return lbl
 
-func _create_code_block(code_text: String, lang: String) -> PanelContainer:
+func _create_code_block(code_text: String, lang: String, block_index: int, action: Dictionary = {}) -> PanelContainer:
 	var panel: PanelContainer = PanelContainer.new()
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var style: StyleBoxFlat = StyleBoxFlat.new()
@@ -126,14 +137,16 @@ func _create_code_block(code_text: String, lang: String) -> PanelContainer:
 	lang_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	toolbar.add_child(lang_label)
 
-	var apply_btn: Button = Button.new()
-	apply_btn.text = "Apply"
-	apply_btn.flat = true
-	apply_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-	apply_btn.pressed.connect(func():
-		apply_code_requested.emit(code_text)
-	)
-	toolbar.add_child(apply_btn)
+	if bool(action.get("show_primary_action", false)):
+		var apply_btn: Button = Button.new()
+		apply_btn.text = String(action.get("button_label", "Preview"))
+		apply_btn.flat = true
+		apply_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		apply_btn.tooltip_text = String(action.get("button_tooltip", action.get("reason", "Review this AI-generated change before applying it.")))
+		apply_btn.pressed.connect(func():
+			response_action_requested.emit(block_index)
+		)
+		toolbar.add_child(apply_btn)
 
 	var copy_btn: Button = Button.new()
 	copy_btn.text = "Copy"
@@ -174,3 +187,13 @@ func _create_code_block(code_text: String, lang: String) -> PanelContainer:
 	code_edit.syntax_highlighter = highlighter
 	v_box.add_child(code_edit)
 	return panel
+
+func _resolve_code_block_action(render_options: Dictionary, block_index: int) -> Dictionary:
+	var actions = render_options.get("code_block_actions", [])
+	if not (actions is Array):
+		return {}
+	if block_index < 0 or block_index >= actions.size():
+		return {}
+	if actions[block_index] is Dictionary:
+		return actions[block_index]
+	return {}

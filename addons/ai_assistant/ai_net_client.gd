@@ -2,6 +2,10 @@
 extends Node
 class_name AINetClient
 
+const CONNECT_TIMEOUT_MS: int = 12000
+const RESPONSE_TIMEOUT_MS: int = 25000
+const STREAM_IDLE_TIMEOUT_MS: int = 30000
+
 signal chunk_received(content_delta: String, reasoning_delta: String)
 signal stream_completed()
 signal stream_failed(error_message: String)
@@ -18,11 +22,15 @@ var stream_finished: bool = false
 var _api_url: String = ""
 var _api_key: String = ""
 var _body_string: String = ""
+var _stream_started_at: int = 0
+var _request_sent_at: int = 0
+var _last_activity_at: int = 0
 
 func _ready() -> void:
 	set_process(false)
 
-func start_stream(url: String, key: String, body: String) -> void:
+func start_stream(url: String, key: String, body: String) -> Dictionary:
+	stop_stream()
 	_api_url = url
 	_api_key = key
 	_body_string = body
@@ -40,19 +48,31 @@ func start_stream(url: String, key: String, body: String) -> void:
 		tls_options = null
 
 	if host.is_empty():
-		stream_failed.emit("Invalid API URL: missing host.")
-		return
+		var missing_host_message: String = "The API URL is invalid because the host is missing."
+		stream_failed.emit(missing_host_message)
+		return {
+			"ok": false,
+			"message": missing_host_message,
+		}
 
 	var connect_error: int = stream_client.connect_to_host(host, port, tls_options)
 	if connect_error != OK:
+		var connect_message: String = "Failed to connect to the model service: %s" % error_string(connect_error)
 		stop_stream()
-		stream_failed.emit("Failed to connect to model service: %s" % error_string(connect_error))
-		return
+		stream_failed.emit(connect_message)
+		return {
+			"ok": false,
+			"message": connect_message,
+		}
 
 	is_streaming = true
 	request_sent = false
 	stream_buffer = ""
+	_stream_started_at = Time.get_ticks_msec()
+	_request_sent_at = 0
+	_last_activity_at = _stream_started_at
 	set_process(true)
+	return {"ok": true}
 
 func stop_stream() -> void:
 	is_streaming = false
@@ -60,8 +80,18 @@ func stop_stream() -> void:
 	stream_client.close()
 	stream_buffer = ""
 	response_buffer = ""
+	request_sent = false
+	received_content = false
+	stream_finished = false
+	_stream_started_at = 0
+	_request_sent_at = 0
+	_last_activity_at = 0
 
 func _process(_delta) -> void:
+	if not is_streaming:
+		return
+
+	_check_timeouts()
 	if not is_streaming:
 		return
 
@@ -71,8 +101,7 @@ func _process(_delta) -> void:
 		var error_message: String = _build_failure_message(stream_client.get_status())
 		if response_code == -1:
 			error_message = "Network poll failed: %s" % error_string(poll_error)
-		stop_stream()
-		stream_failed.emit(error_message)
+		_fail_stream(error_message)
 		return
 
 	var status: int = stream_client.get_status()
@@ -84,11 +113,12 @@ func _process(_delta) -> void:
 
 		var request_error: int = stream_client.request(HTTPClient.METHOD_POST, endpoint, headers, _body_string)
 		if request_error != OK:
-			stop_stream()
-			stream_failed.emit("Failed to send request: %s" % error_string(request_error))
+			_fail_stream("Failed to send the request: %s" % error_string(request_error))
 			return
 
 		request_sent = true
+		_request_sent_at = Time.get_ticks_msec()
+		_last_activity_at = _request_sent_at
 
 	elif status == HTTPClient.STATUS_BODY:
 		if stream_client.has_response():
@@ -97,6 +127,7 @@ func _process(_delta) -> void:
 
 			var chunk: PackedByteArray = stream_client.read_response_body_chunk()
 			if chunk.size() > 0:
+				_last_activity_at = Time.get_ticks_msec()
 				var text: String = chunk.get_string_from_utf8()
 				if response_code >= 400:
 					response_buffer += text
@@ -109,8 +140,7 @@ func _process(_delta) -> void:
 			return
 
 		var error_message: String = _build_failure_message(status)
-		stop_stream()
-		stream_failed.emit(error_message)
+		_fail_stream(error_message)
 
 func _parse_sse_chunk(chunk_text: String) -> void:
 	stream_buffer += chunk_text
@@ -144,6 +174,24 @@ func _parse_sse_chunk(chunk_text: String) -> void:
 						received_content = true
 					chunk_received.emit(safe_c, safe_r)
 
+func _check_timeouts() -> void:
+	var now: int = Time.get_ticks_msec()
+
+	if not request_sent and _stream_started_at > 0 and now - _stream_started_at >= CONNECT_TIMEOUT_MS:
+		_fail_stream("Connecting to the model service timed out.")
+		return
+
+	if request_sent and not received_content and _request_sent_at > 0 and now - _request_sent_at >= RESPONSE_TIMEOUT_MS:
+		_fail_stream("Timed out while waiting for the model response.")
+		return
+
+	if request_sent and _last_activity_at > 0 and now - _last_activity_at >= STREAM_IDLE_TIMEOUT_MS:
+		_fail_stream("The streaming response was idle for too long and timed out.")
+
+func _fail_stream(message: String) -> void:
+	stop_stream()
+	stream_failed.emit(message)
+
 func _build_failure_message(status: int) -> String:
 	if response_code >= 400:
 		var parsed = JSON.parse_string(response_buffer)
@@ -157,16 +205,16 @@ func _build_failure_message(status: int) -> String:
 
 		var compact: String = response_buffer.strip_edges()
 		if compact.is_empty():
-			return "Request failed, HTTP status: %d" % response_code
+			return "Request failed. HTTP status code: %d" % response_code
 		return "Request failed (%d): %s" % [response_code, compact]
 
 	if request_sent and not received_content:
-		return "Model connection closed without returning content."
+		return "The model connection closed before any content was returned."
 
 	if status == HTTPClient.STATUS_CONNECTION_ERROR:
-		return "Connection to model service was interrupted."
+		return "The connection to the model service was interrupted."
 
-	return "Streaming response ended early."
+	return "The streaming response ended unexpectedly."
 
 func _capture_response_code() -> void:
 	if response_code != -1:
