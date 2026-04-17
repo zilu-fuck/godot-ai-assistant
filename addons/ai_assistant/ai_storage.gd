@@ -12,20 +12,47 @@ func load_config() -> Dictionary:
 	var data: Dictionary = {
 		"url": "https://api.deepseek.com/chat/completions",
 		"key": "",
-		"model": "deepseek-chat"
+		"model": "deepseek-chat",
+		"profiles": {},
 	}
 
 	if config.load(CONFIG_PATH) == OK:
 		data.url = config.get_value("API", "url", data.url)
 		data.key = config.get_value("API", "key", "")
 		data.model = config.get_value("API", "model", data.model)
+		var raw_profiles = config.get_value("API", "profiles_json", "")
+		if raw_profiles is String and not String(raw_profiles).strip_edges().is_empty():
+			var parsed_profiles = JSON.parse_string(String(raw_profiles))
+			if parsed_profiles is Dictionary:
+				data.profiles = _normalize_profiles(parsed_profiles)
+		elif raw_profiles is Dictionary:
+			data.profiles = _normalize_profiles(raw_profiles)
+
+	if data.profiles.is_empty() and not String(data.model).is_empty():
+		data.profiles[String(data.model)] = {
+			"url": String(data.url),
+			"key": String(data.key),
+		}
+
+	var selected_model: String = String(data.model)
+	if data.profiles.has(selected_model):
+		var selected_profile: Dictionary = data.profiles[selected_model]
+		data.url = String(selected_profile.get("url", data.url))
+		data.key = String(selected_profile.get("key", data.key))
 	return data
 
-func save_config(url: String, key: String, model: String) -> void:
+func save_config(url: String, key: String, model: String, profiles: Dictionary = {}) -> void:
 	var config: ConfigFile = ConfigFile.new()
+	var normalized_profiles: Dictionary = _normalize_profiles(profiles)
+	if not String(model).is_empty():
+		normalized_profiles[String(model)] = {
+			"url": String(url),
+			"key": String(key),
+		}
 	config.set_value("API", "url", url)
 	config.set_value("API", "key", key)
 	config.set_value("API", "model", model)
+	config.set_value("API", "profiles_json", JSON.stringify(normalized_profiles))
 	config.save(CONFIG_PATH)
 
 func load_all_sessions() -> Dictionary:
@@ -86,3 +113,18 @@ func _default_memory() -> Dictionary:
 		"last_compact_mode": "",
 		"summary_text": "",
 	}
+
+func _normalize_profiles(raw_profiles: Dictionary) -> Dictionary:
+	var normalized: Dictionary = {}
+	for raw_model in raw_profiles.keys():
+		var model: String = String(raw_model).strip_edges()
+		if model.is_empty():
+			continue
+		var profile: Variant = raw_profiles[raw_model]
+		if not (profile is Dictionary):
+			continue
+		normalized[model] = {
+			"url": String(profile.get("url", "")).strip_edges(),
+			"key": String(profile.get("key", "")).strip_edges(),
+		}
+	return normalized

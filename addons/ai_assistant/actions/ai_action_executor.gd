@@ -10,12 +10,14 @@ const ACTION_EXPLAIN_ONLY: String = "explain_only"
 const ACTION_SHOW_DIFF_ONLY: String = "show_diff_only"
 const ACTION_INSERT_AT_CARET: String = "insert_at_caret"
 const ACTION_REPLACE_SELECTION: String = "replace_selection"
+const ACTION_CREATE_SCENE: String = "create_scene"
 
 const EXEC_REPLACE_TEXT_RANGE: String = "replace_text_range"
 const EXEC_REPLACE_CODE_BLOCK: String = "replace_code_block"
 const EXEC_REPLACE_FILE: String = "replace_file"
 const EXEC_INSERT_AT_CARET: String = "insert_at_caret"
 const EXEC_INSERT_AT_FILE_END: String = "insert_at_file_end"
+const EXEC_CREATE_SCENE_FILE: String = "create_scene_file"
 
 func build_action_for_code(code: String, context_data: Dictionary) -> Dictionary:
 	var selected_text: String = str(context_data.get("text", ""))
@@ -25,7 +27,7 @@ func build_action_for_code(code: String, context_data: Dictionary) -> Dictionary
 		return prepare_candidate_for_ui({
 			"action_type": ACTION_REPLACE_SELECTION,
 			"execution_type": EXEC_REPLACE_TEXT_RANGE,
-			"label": "Replace Selection",
+			"label": "替换选中内容",
 			"content": code,
 			"original_text": selected_text,
 			"requires_preview": true,
@@ -37,15 +39,15 @@ func build_action_for_code(code: String, context_data: Dictionary) -> Dictionary
 			"secondary_confirmed": false,
 			"target_kind": "selection",
 			"target_shape": "selection",
-			"target_label": "Current Selection",
-			"match_reason": "The editor already has an active selection, so the generated code can replace it directly.",
+			"target_label": "当前选区",
+			"match_reason": "编辑器里已经有选区，所以这段生成代码可以直接替换它。",
 			"confidence": 1.0,
 		})
 
 	return prepare_candidate_for_ui({
 		"action_type": ACTION_INSERT_AT_CARET,
 		"execution_type": EXEC_INSERT_AT_CARET,
-		"label": "Insert at Caret",
+		"label": "插入到光标处",
 		"content": code,
 		"original_text": "",
 		"requires_preview": true,
@@ -57,28 +59,50 @@ func build_action_for_code(code: String, context_data: Dictionary) -> Dictionary
 		"secondary_confirmed": false,
 		"target_kind": "caret",
 		"target_shape": "snippet",
-		"target_label": "Caret Position",
-		"match_reason": "No stronger replace target was found, so this change falls back to inserting at the caret.",
+		"target_label": "光标位置",
+		"match_reason": "没有找到更可靠的替换目标，所以回退为在光标处插入。",
 		"confidence": 0.35,
 	})
 
-func inspect_generated_code(code: String, language: String) -> Dictionary:
+func inspect_generated_block(code: String, language: String) -> Dictionary:
 	var cleaned_code: String = code.strip_edges()
 	var normalized_language: String = language.to_lower()
 	if cleaned_code.is_empty():
 		return {
 			"is_applyable": false,
-			"reason": "This code block is empty.",
+			"reason": "这个代码块是空的。",
 			"code_shape": "empty",
 			"line_count": 0,
 			"risk_level": "low",
 			"default_action_type": ACTION_EXPLAIN_ONLY,
 			"default_button_label": "",
 		}
+	if _looks_like_scene_file(cleaned_code, normalized_language):
+		var scene_root_name: String = extract_scene_root_name(cleaned_code)
+		var line_count: int = cleaned_code.split("\n").size()
+		var risk_level: String = "medium"
+		var default_button_label: String = "创建场景"
+		var reason: String = "这个代码块看起来是一个 Godot 场景文件，可以创建为场景资源。"
+		if line_count >= LARGE_REPLACEMENT_LINE_THRESHOLD:
+			risk_level = "high"
+			default_button_label = "预览"
+			reason = "这个场景代码块比较大，因此会先进入预览模式再创建。"
+
+		return {
+			"is_applyable": true,
+			"reason": reason,
+			"code_shape": "scene_file",
+			"line_count": line_count,
+			"risk_level": risk_level,
+			"default_action_type": ACTION_CREATE_SCENE,
+			"default_button_label": default_button_label,
+			"scene_root_name": scene_root_name,
+			"content_kind": "scene_file",
+		}
 	if not normalized_language.is_empty() and normalized_language not in ["gd", "gdscript"]:
 		return {
 			"is_applyable": false,
-			"reason": "Only GDScript code blocks can be applied from the dock.",
+			"reason": "当前 Dock 只支持应用 GDScript 代码块。",
 			"code_shape": "unsupported_language",
 			"line_count": cleaned_code.split("\n").size(),
 			"risk_level": "low",
@@ -88,7 +112,7 @@ func inspect_generated_code(code: String, language: String) -> Dictionary:
 	if not _looks_like_gdscript_edit(cleaned_code):
 		return {
 			"is_applyable": false,
-			"reason": "This code block does not look like a direct GDScript edit target.",
+			"reason": "这个代码块看起来不像一个可直接应用的 GDScript 修改目标。",
 			"code_shape": "snippet",
 			"line_count": cleaned_code.split("\n").size(),
 			"risk_level": "low",
@@ -100,19 +124,18 @@ func inspect_generated_code(code: String, language: String) -> Dictionary:
 	var line_count: int = cleaned_code.split("\n").size()
 	var risk_level: String = "medium"
 	var default_action_type: String = ACTION_REPLACE_SELECTION
-	var default_button_label: String = "Apply"
-	var reason: String = "Review this suggested code change before applying it."
+	var default_button_label: String = "应用"
+	var reason: String = "建议先审查这次代码改动，再决定是否应用。"
 
 	if code_shape == "full_file" or line_count >= LARGE_REPLACEMENT_LINE_THRESHOLD:
 		risk_level = "high"
 		default_action_type = ACTION_SHOW_DIFF_ONLY
-		default_button_label = "Preview"
-		reason = "This code block looks like a full-file or large replacement, so it starts in preview mode."
+		default_button_label = "预览"
+		reason = "这个代码块看起来像整文件或大段替换，因此会先进入预览模式。"
 	elif code_shape == "single_function":
-		reason = "This code block looks like a direct function replacement suggestion."
+		reason = "这个代码块看起来像单个函数的替换建议。"
 	else:
-		risk_level = "medium"
-		reason = "This code block looks like a focused code edit suggestion."
+		reason = "这个代码块看起来像一次聚焦的代码修改建议。"
 
 	return {
 		"is_applyable": true,
@@ -123,6 +146,48 @@ func inspect_generated_code(code: String, language: String) -> Dictionary:
 		"default_action_type": default_action_type,
 		"default_button_label": default_button_label,
 	}
+
+func inspect_generated_code(code: String, language: String) -> Dictionary:
+	return inspect_generated_block(code, language)
+
+func validate_scene_text(scene_text: String) -> Dictionary:
+	var cleaned_scene: String = scene_text.strip_edges()
+	if cleaned_scene.is_empty():
+		return {
+			"ok": false,
+			"reason": "empty_scene",
+			"message": "场景内容为空，无法创建场景文件。",
+		}
+	if not _looks_like_scene_file(cleaned_scene, "tscn"):
+		return {
+			"ok": false,
+			"reason": "invalid_scene_header",
+			"message": "这段内容看起来不是有效的 Godot 场景文件。",
+		}
+
+	var lines: Array = cleaned_scene.split("\n")
+	for index in range(lines.size()):
+		var line: String = str(lines[index]).strip_edges()
+		if not line.begins_with("[ext_resource "):
+			continue
+		return {
+			"ok": false,
+			"reason": "external_resources_not_allowed",
+			"message": "当前场景创建只接受纯 .tscn 内容。请不要返回 ext_resource；如果需要脚本，请单独提供一个 gdscript 代码块。",
+			"line": index + 1,
+		}
+	return {
+		"ok": true,
+	}
+
+func extract_scene_root_name(scene_text: String) -> String:
+	var regex: RegEx = RegEx.new()
+	if regex.compile("\\[node\\s+name=\"([^\"]+)\"") != OK:
+		return ""
+	var result: RegExMatch = regex.search(scene_text)
+	if result == null:
+		return ""
+	return result.get_string(1).strip_edges()
 
 func prepare_candidate_for_ui(action: Dictionary) -> Dictionary:
 	var prepared: Dictionary = action.duplicate(true)
@@ -151,39 +216,49 @@ func build_target_selection_label(action: Dictionary) -> String:
 
 func build_target_preview_bbcode(action: Dictionary) -> String:
 	var lines: Array = []
-	lines.append("[b][color=#E5C07B]Target Candidate[/color][/b]")
-	lines.append("Action: %s" % _localize_action_type(str(action.get("action_type", ACTION_EXPLAIN_ONLY))))
-	lines.append("Target: %s" % str(action.get("target_label", action.get("label", "Change"))))
+	lines.append("[b][color=#E5C07B]目标候选[/color][/b]")
+	lines.append("动作：%s" % _localize_action_type(str(action.get("action_type", ACTION_EXPLAIN_ONLY))))
+	lines.append("目标：%s" % str(action.get("target_label", action.get("label", "改动"))))
 	var target_path: String = str(action.get("target_path", "")).strip_edges()
 	if not target_path.is_empty():
-		lines.append("File: %s" % target_path)
+		lines.append("文件：%s" % target_path)
+	var companion_script_target_path: String = str(action.get("companion_script_target_path", "")).strip_edges()
+	if not companion_script_target_path.is_empty():
+		lines.append("配套脚本：%s" % companion_script_target_path)
 	var start_line: int = int(action.get("start_line", -1))
 	var end_line: int = int(action.get("end_line", -1))
 	if start_line >= 0 and end_line >= start_line:
-		lines.append("Lines: %d-%d" % [start_line + 1, end_line + 1])
-	lines.append("Risk: %s" % _localize_risk_level(str(action.get("risk_level", "unknown"))))
-	lines.append("Confidence: %.0f%%" % (float(action.get("confidence", 0.0)) * 100.0))
-	lines.append("Reason: %s" % str(action.get("match_reason", "No target match reason was recorded.")))
+		lines.append("行号：%d-%d" % [start_line + 1, end_line + 1])
+	lines.append("风险：%s" % _localize_risk_level(str(action.get("risk_level", "unknown"))))
+	lines.append("置信度：%.0f%%" % (float(action.get("confidence", 0.0)) * 100.0))
+	lines.append("原因：%s" % str(action.get("match_reason", "没有记录目标匹配原因。")))
 	lines.append("")
-	lines.append("[b]Current Code[/b]")
+	lines.append("[b]%s[/b]" % ("现有场景内容" if str(action.get("action_type", "")) == ACTION_CREATE_SCENE else "当前代码"))
 	lines.append("[code]")
-	lines.append(_truncate_preview_code(str(action.get("original_text", ""))))
+	var original_text: String = str(action.get("original_text", ""))
+	lines.append(_truncate_preview_code(original_text if not original_text.is_empty() else "（新文件）"))
 	lines.append("[/code]")
 	return "\n".join(lines)
 
 func build_action_review_data(action: Dictionary) -> Dictionary:
 	var risk_level: String = str(action.get("risk_level", "unknown"))
 	var target_label: String = str(action.get("target_label", action.get("label", "Change")))
-	return {
-		"dialog_title": "Review Change: %s" % target_label,
-		"confirm_text": "Continue" if action_requires_secondary_confirmation(action) else "Apply Change",
-		"bbcode": _build_action_review_bbcode(action),
-		"requires_secondary_confirmation": action_requires_secondary_confirmation(action),
-		"secondary_confirmation_title": "Confirm High-Risk Change",
-		"secondary_confirmation_message": "This is a %s change targeting %s. Confirm again to apply it." % [
+	var secondary_message: String = "这是一个%s改动，目标为 %s。请再次确认后再应用。" % [
+		_localize_risk_level(risk_level).to_lower(),
+		target_label,
+	]
+	if str(action.get("action_type", "")) == ACTION_CREATE_SCENE:
+		secondary_message = "这是一个%s场景操作，目标为 %s。写入场景文件前请再次确认。" % [
 			_localize_risk_level(risk_level).to_lower(),
 			target_label,
-		],
+		]
+	return {
+		"dialog_title": "审查改动：%s" % target_label,
+		"confirm_text": "继续" if action_requires_secondary_confirmation(action) else _default_confirm_text(action),
+		"bbcode": _build_action_review_bbcode(action),
+		"requires_secondary_confirmation": action_requires_secondary_confirmation(action),
+		"secondary_confirmation_title": "确认高风险改动",
+		"secondary_confirmation_message": secondary_message,
 	}
 
 func action_requires_secondary_confirmation(action: Dictionary) -> bool:
@@ -197,12 +272,12 @@ func plan_code_application(code: String, code_edit: CodeEdit, script_path: Strin
 	if code_edit == null:
 		return {
 			"ok": false,
-			"message": "No editable script is active.",
+			"message": "当前没有可编辑的脚本。",
 		}
 	if cleaned_code.is_empty():
 		return {
 			"ok": false,
-			"message": "No code is available to apply.",
+			"message": "没有可应用的代码。",
 		}
 
 	var selection_range: Dictionary = {}
@@ -229,7 +304,7 @@ func plan_code_application_for_text(code: String, source_text: String, script_pa
 	if cleaned_code.is_empty():
 		return {
 			"ok": false,
-			"message": "No code is available to apply.",
+			"message": "没有可应用的代码。",
 		}
 
 	var code_shape: String = _classify_generated_code_shape(cleaned_code)
@@ -253,10 +328,10 @@ func plan_code_application_for_text(code: String, source_text: String, script_pa
 				continue
 
 			var confidence: float = 0.96
-			var reason: String = "Matched the same function name `%s` inside the target file." % generated_function_name
+			var reason: String = "在目标文件里匹配到了同名函数 `%s`。" % generated_function_name
 			if not caret_block.is_empty() and int(caret_block.get("start_line", -1)) == int(block.get("start_line", -2)):
 				confidence = 0.99
-				reason = "Matched the same function `%s` at the current caret location." % generated_function_name
+				reason = "在当前光标位置匹配到了同一个函数 `%s`。" % generated_function_name
 			candidates.append(_build_block_candidate(cleaned_code, block, script_path, confidence, reason))
 
 		if candidates.is_empty() and not caret_block.is_empty():
@@ -265,7 +340,7 @@ func plan_code_application_for_text(code: String, source_text: String, script_pa
 				caret_block,
 				script_path,
 				0.78,
-				"No exact function-name match was found, so the current caret function is the safest fallback."
+				"没有找到完全同名的函数，所以回退为当前光标所在函数。"
 			))
 
 	if code_shape != "full_file" and caret_line >= 0:
@@ -307,12 +382,70 @@ func plan_code_application_for_text(code: String, source_text: String, script_pa
 		"requires_target_selection": requires_target_selection,
 	}
 
+func plan_scene_creation(scene_text: String, target_path: String, existing_text: String = "", active_scene_path: String = "") -> Dictionary:
+	var cleaned_scene: String = scene_text.strip_edges()
+	if cleaned_scene.is_empty():
+		return {
+			"ok": false,
+			"message": "没有可创建的场景内容。",
+		}
+	if target_path.strip_edges().is_empty():
+		return {
+			"ok": false,
+			"message": "没有可用于创建场景的目标路径。",
+		}
+	if not _looks_like_scene_file(cleaned_scene, "tscn"):
+		return {
+			"ok": false,
+			"message": "选中的代码块看起来不像 Godot 场景文件。",
+		}
+
+	var validation: Dictionary = validate_scene_text(cleaned_scene)
+	if not bool(validation.get("ok", false)):
+		return {
+			"ok": false,
+			"reason": str(validation.get("reason", "invalid_scene")),
+			"message": str(validation.get("message", "场景内容未通过校验。")),
+		}
+
+	var root_name: String = extract_scene_root_name(cleaned_scene)
+	var candidate: Dictionary = {
+		"action_type": ACTION_CREATE_SCENE,
+		"execution_type": EXEC_CREATE_SCENE_FILE,
+		"label": "创建场景" if existing_text.is_empty() else "替换场景文件",
+		"content": cleaned_scene,
+		"original_text": existing_text,
+		"requires_preview": true,
+		"intent": "create_scene",
+		"risk_level": "medium" if existing_text.is_empty() else "high",
+		"requires_confirmation": true,
+		"requires_secondary_confirmation": not existing_text.is_empty(),
+		"confirmed": false,
+		"secondary_confirmed": false,
+		"target_kind": "scene_file",
+		"target_shape": "scene_file",
+		"target_label": root_name if not root_name.is_empty() else "场景文件",
+		"target_name": root_name,
+		"target_path": target_path,
+		"match_reason": "运行时为这次生成的场景选择了这个 `.tscn` 路径。",
+		"confidence": 0.95,
+	}
+	candidate = prepare_candidate_for_ui(_finalize_candidate(candidate, active_scene_path))
+	return {
+		"ok": true,
+		"code_shape": "scene_file",
+		"candidates": [candidate],
+		"primary_candidate": candidate,
+		"auto_apply": true,
+		"requires_target_selection": false,
+	}
+
 func can_execute_action(action: Dictionary, code_edit: CodeEdit, confirmed: bool = false) -> Dictionary:
 	if action.is_empty():
 		return {
 			"ok": false,
 			"reason": "missing_action",
-			"message": "No action is available.",
+			"message": "当前没有可执行的动作。",
 		}
 
 	var action_type: String = str(action.get("action_type", ""))
@@ -327,18 +460,53 @@ func can_execute_action(action: Dictionary, code_edit: CodeEdit, confirmed: bool
 				"ok": true,
 				"reason": "allowed",
 			}
-		ACTION_REPLACE_SELECTION, ACTION_INSERT_AT_CARET:
-			if execution_type == EXEC_INSERT_AT_CARET and code_edit == null:
+		ACTION_CREATE_SCENE:
+			if execution_type != EXEC_CREATE_SCENE_FILE:
 				return {
 					"ok": false,
-					"reason": "missing_editor",
-					"message": "No editable script is active.",
+					"reason": "unsupported_action",
+					"message": "不支持的场景创建方案：%s" % execution_type,
 				}
 			if content.is_empty():
 				return {
 					"ok": false,
 					"reason": "missing_content",
-					"message": "No code is available to apply.",
+					"message": "没有可创建的场景内容。",
+				}
+			if str(action.get("target_path", "")).strip_edges().is_empty():
+				return {
+					"ok": false,
+					"reason": "missing_target_path",
+					"message": "缺少场景创建的目标路径。",
+				}
+			if requires_confirmation and not confirmed:
+				return {
+					"ok": false,
+					"reason": "confirmation_required",
+					"message": "创建这个场景前需要先确认预览。",
+				}
+			if requires_secondary_confirmation and not bool(action.get("secondary_confirmed", false)):
+				return {
+					"ok": false,
+					"reason": "secondary_confirmation_required",
+					"message": "这个高风险场景改动需要额外确认一次。",
+				}
+			return {
+				"ok": true,
+				"reason": "allowed",
+			}
+		ACTION_REPLACE_SELECTION, ACTION_INSERT_AT_CARET:
+			if execution_type == EXEC_INSERT_AT_CARET and code_edit == null:
+				return {
+					"ok": false,
+					"reason": "missing_editor",
+					"message": "当前没有可编辑的脚本。",
+				}
+			if content.is_empty():
+				return {
+					"ok": false,
+					"reason": "missing_content",
+					"message": "没有可应用的代码。",
 				}
 			if execution_type == EXEC_REPLACE_TEXT_RANGE:
 				var range_start_line: int = int(action.get("start_line", -1))
@@ -349,13 +517,13 @@ func can_execute_action(action: Dictionary, code_edit: CodeEdit, confirmed: bool
 					return {
 						"ok": false,
 						"reason": "missing_target_range",
-						"message": "The target text range is invalid.",
+						"message": "目标文本范围无效。",
 					}
 				if range_start_column < 0 or range_end_column < 0:
 					return {
 						"ok": false,
 						"reason": "missing_target_range",
-						"message": "The target text range is invalid.",
+						"message": "目标文本范围无效。",
 					}
 			if execution_type == EXEC_REPLACE_CODE_BLOCK:
 				var start_line: int = int(action.get("start_line", -1))
@@ -364,25 +532,25 @@ func can_execute_action(action: Dictionary, code_edit: CodeEdit, confirmed: bool
 					return {
 						"ok": false,
 						"reason": "missing_target_range",
-						"message": "The target code block range is invalid.",
+						"message": "目标代码块范围无效。",
 					}
 			if execution_type == EXEC_INSERT_AT_FILE_END and int(action.get("insert_line", -1)) < 0:
 				return {
 					"ok": false,
 					"reason": "missing_target_range",
-					"message": "The target file end position is invalid.",
+					"message": "目标文件末尾位置无效。",
 				}
 			if requires_confirmation and not confirmed:
 				return {
 					"ok": false,
 					"reason": "confirmation_required",
-					"message": "Preview confirmation is required before applying this action.",
+					"message": "应用这个动作前需要先确认预览。",
 				}
 			if requires_secondary_confirmation and not bool(action.get("secondary_confirmed", false)):
 				return {
 					"ok": false,
 					"reason": "secondary_confirmation_required",
-					"message": "This high-risk change requires an additional confirmation step.",
+					"message": "这个高风险改动需要额外确认一次。",
 				}
 			return {
 				"ok": true,
@@ -392,7 +560,7 @@ func can_execute_action(action: Dictionary, code_edit: CodeEdit, confirmed: bool
 			return {
 				"ok": false,
 				"reason": "unsupported_action",
-				"message": "Unsupported action type: %s" % action_type,
+				"message": "不支持的动作类型：%s" % action_type,
 			}
 
 func execute_action(action: Dictionary, code_edit: CodeEdit) -> Dictionary:
@@ -400,7 +568,7 @@ func execute_action(action: Dictionary, code_edit: CodeEdit) -> Dictionary:
 	if not bool(gate.get("ok", false)):
 		return {
 			"ok": false,
-			"error": str(gate.get("message", "Action execution is blocked.")),
+			"error": str(gate.get("message", "动作执行被阻止。")),
 			"reason": str(gate.get("reason", "blocked")),
 		}
 
@@ -441,7 +609,7 @@ func execute_action(action: Dictionary, code_edit: CodeEdit) -> Dictionary:
 		_:
 			return {
 				"ok": false,
-				"error": "Unsupported execution type: %s" % execution_type,
+				"error": "不支持的执行类型：%s" % execution_type,
 			}
 
 	return {
@@ -451,6 +619,11 @@ func execute_action(action: Dictionary, code_edit: CodeEdit) -> Dictionary:
 	}
 
 func create_log_entry(action: Dictionary, applied: bool) -> Dictionary:
+	var extra_target_paths: Array = []
+	var companion_script_target_path: String = str(action.get("companion_script_target_path", "")).strip_edges()
+	if not companion_script_target_path.is_empty():
+		extra_target_paths.append(companion_script_target_path)
+
 	return {
 		"action_type": str(action.get("action_type", "unknown")),
 		"execution_type": str(action.get("execution_type", "unknown")),
@@ -468,6 +641,7 @@ func create_log_entry(action: Dictionary, applied: bool) -> Dictionary:
 		"target_kind": str(action.get("target_kind", "unknown")),
 		"target_label": str(action.get("target_label", "")),
 		"target_path": str(action.get("target_path", "")),
+		"extra_target_paths": extra_target_paths,
 		"match_reason": str(action.get("match_reason", "")),
 		"confidence": float(action.get("confidence", 0.0)),
 	}
@@ -520,17 +694,22 @@ func apply_action_to_text(action: Dictionary, original_text: String) -> Dictiona
 				"ok": true,
 				"text": str(action.get("content", "")),
 			}
+		EXEC_CREATE_SCENE_FILE:
+			return {
+				"ok": true,
+				"text": str(action.get("content", "")),
+			}
 		_:
 			return {
 				"ok": false,
-				"message": "Unsupported text transformation type: %s" % execution_type,
+				"message": "不支持的文本变换类型：%s" % execution_type,
 			}
 
 func _build_selection_candidate(code: String, selection_range: Dictionary, script_path: String) -> Dictionary:
 	return {
 		"action_type": ACTION_REPLACE_SELECTION,
 		"execution_type": EXEC_REPLACE_TEXT_RANGE,
-		"label": "Replace Selection",
+		"label": "替换选中内容",
 		"content": code,
 		"original_text": str(selection_range.get("original_text", "")),
 		"requires_preview": true,
@@ -542,9 +721,9 @@ func _build_selection_candidate(code: String, selection_range: Dictionary, scrip
 		"secondary_confirmed": false,
 		"target_kind": "selection",
 		"target_shape": "selection",
-		"target_label": "Current Selection",
+		"target_label": "当前选区",
 		"target_path": script_path,
-		"match_reason": "The editor already has an active selection.",
+		"match_reason": "编辑器里已经有选区。",
 		"confidence": 1.0,
 		"start_line": int(selection_range.get("start_line", -1)),
 		"end_line": int(selection_range.get("end_line", -1)),
@@ -557,7 +736,7 @@ func _build_block_candidate(code: String, block: Dictionary, script_path: String
 	return {
 		"action_type": ACTION_REPLACE_SELECTION,
 		"execution_type": EXEC_REPLACE_CODE_BLOCK,
-		"label": "Replace %s" % str(block.get("label", "Code Block")),
+		"label": "替换 %s" % str(block.get("label", "代码块")),
 		"content": code,
 		"original_text": str(block.get("text", "")),
 		"requires_preview": true,
@@ -569,7 +748,7 @@ func _build_block_candidate(code: String, block: Dictionary, script_path: String
 		"secondary_confirmed": false,
 		"target_kind": "code_block",
 		"target_shape": "single_function",
-		"target_label": str(block.get("label", "Code Block")),
+		"target_label": str(block.get("label", "代码块")),
 		"target_name": function_name,
 		"target_path": script_path,
 		"match_reason": reason,
@@ -588,7 +767,7 @@ func _build_full_file_candidate(code: String, source_text: String, script_path: 
 	return {
 		"action_type": ACTION_REPLACE_SELECTION,
 		"execution_type": EXEC_REPLACE_FILE,
-		"label": "Replace File",
+		"label": "替换文件",
 		"content": code,
 		"original_text": source_text,
 		"requires_preview": true,
@@ -600,9 +779,9 @@ func _build_full_file_candidate(code: String, source_text: String, script_path: 
 		"secondary_confirmed": false,
 		"target_kind": "file",
 		"target_shape": "full_file",
-		"target_label": "Whole File",
+		"target_label": "整个文件",
 		"target_path": script_path,
-		"match_reason": "The generated code looks like a complete script, so the plan targets the whole file.",
+		"match_reason": "生成代码看起来像完整脚本，因此目标指向整个文件。",
 		"confidence": 0.99,
 		"start_line": 0,
 		"end_line": end_line,
@@ -614,7 +793,7 @@ func _build_insert_candidate(code: String, caret_line: int, script_path: String)
 	return {
 		"action_type": ACTION_INSERT_AT_CARET,
 		"execution_type": EXEC_INSERT_AT_CARET,
-		"label": "Insert at Caret",
+		"label": "插入到光标处",
 		"content": code,
 		"original_text": "",
 		"requires_preview": true,
@@ -626,9 +805,9 @@ func _build_insert_candidate(code: String, caret_line: int, script_path: String)
 		"secondary_confirmed": false,
 		"target_kind": "caret",
 		"target_shape": "snippet",
-		"target_label": "Caret Position",
+		"target_label": "光标位置",
 		"target_path": script_path,
-		"match_reason": "No stronger replace target was found, so this change falls back to inserting at the caret.",
+		"match_reason": "没有找到更可靠的替换目标，所以回退为在光标处插入。",
 		"confidence": 0.35,
 		"start_line": caret_line,
 		"end_line": caret_line,
@@ -640,7 +819,7 @@ func _build_file_end_candidate(code: String, source_text: String, script_path: S
 	return {
 		"action_type": ACTION_INSERT_AT_CARET,
 		"execution_type": EXEC_INSERT_AT_FILE_END,
-		"label": "Append to File",
+		"label": "追加到文件末尾",
 		"content": code,
 		"original_text": "",
 		"requires_preview": true,
@@ -652,9 +831,9 @@ func _build_file_end_candidate(code: String, source_text: String, script_path: S
 		"secondary_confirmed": false,
 		"target_kind": "file_end",
 		"target_shape": "snippet",
-		"target_label": "File End",
+		"target_label": "文件末尾",
 		"target_path": script_path,
-		"match_reason": "No matching function was found, so the safest fallback is to append this code to the file.",
+		"match_reason": "没有找到匹配函数，所以最安全的回退方案是追加到文件末尾。",
 		"confidence": 0.62,
 		"insert_line": insert_line,
 	}
@@ -673,22 +852,29 @@ func _finalize_candidate(action: Dictionary, active_script_path: String) -> Dict
 	if execution_type == EXEC_REPLACE_FILE:
 		finalized["risk_level"] = "high"
 		finalized["requires_secondary_confirmation"] = true
+	if execution_type == EXEC_CREATE_SCENE_FILE and not str(finalized.get("original_text", "")).strip_edges().is_empty():
+		finalized["risk_level"] = "high"
+		finalized["requires_secondary_confirmation"] = true
+		_append_match_reason(finalized, "这个场景路径已经存在，所以在这里创建会替换当前场景文件。")
 
 	if execution_type in [EXEC_REPLACE_TEXT_RANGE, EXEC_REPLACE_CODE_BLOCK, EXEC_REPLACE_FILE] and max(replacement_line_count, affected_line_count) >= LARGE_REPLACEMENT_LINE_THRESHOLD:
 		finalized["risk_level"] = "high"
 		finalized["requires_secondary_confirmation"] = true
-		_append_match_reason(finalized, "This replacement spans a large code region and needs a stronger confirmation gate.")
+		_append_match_reason(finalized, "这次替换覆盖了较大的代码区域，需要更严格的确认。")
 
-	if execution_type == EXEC_INSERT_AT_FILE_END and replacement_line_count >= LARGE_REPLACEMENT_LINE_THRESHOLD:
+	if execution_type in [EXEC_INSERT_AT_FILE_END, EXEC_CREATE_SCENE_FILE] and replacement_line_count >= LARGE_REPLACEMENT_LINE_THRESHOLD:
 		finalized["risk_level"] = "high"
 		finalized["requires_secondary_confirmation"] = true
-		_append_match_reason(finalized, "This append operation is large enough to require a high-risk confirmation.")
+		if execution_type == EXEC_CREATE_SCENE_FILE:
+			_append_match_reason(finalized, "这个生成场景足够大，需要高风险确认。")
+		else:
+			_append_match_reason(finalized, "这次追加内容足够大，需要高风险确认。")
 
 	var target_path: String = str(finalized.get("target_path", "")).strip_edges()
-	if not target_path.is_empty() and not active_script_path.is_empty() and target_path != active_script_path:
+	if finalized.get("intent", "") == "modify_code" and not target_path.is_empty() and not active_script_path.is_empty() and target_path != active_script_path:
 		finalized["risk_level"] = "high"
 		finalized["requires_secondary_confirmation"] = true
-		_append_match_reason(finalized, "This plan edits a different file than the active editor.")
+		_append_match_reason(finalized, "这个方案会修改当前活动编辑器之外的另一个文件。")
 
 	return finalized
 
@@ -888,22 +1074,25 @@ func _sort_candidates(a: Dictionary, b: Dictionary) -> bool:
 
 func _build_action_review_bbcode(action: Dictionary) -> String:
 	var lines: Array = []
-	lines.append("[b][color=#E5C07B]Change Review[/color][/b]")
-	lines.append("Action: %s" % _localize_action_type(str(action.get("action_type", ACTION_EXPLAIN_ONLY))))
-	lines.append("Execution Plan: %s" % _localize_execution_type(str(action.get("execution_type", ""))))
-	lines.append("Target: %s" % str(action.get("target_label", action.get("label", "Change"))))
+	lines.append("[b][color=#E5C07B]改动审查[/color][/b]")
+	lines.append("动作：%s" % _localize_action_type(str(action.get("action_type", ACTION_EXPLAIN_ONLY))))
+	lines.append("操作：%s" % _describe_operation(action))
+	lines.append("目标：%s" % str(action.get("target_label", action.get("label", "改动"))))
 	var target_path: String = str(action.get("target_path", "")).strip_edges()
 	if not target_path.is_empty():
-		lines.append("File: %s" % target_path)
+		lines.append("文件：%s" % target_path)
+	var companion_script_target_path: String = str(action.get("companion_script_target_path", "")).strip_edges()
+	if not companion_script_target_path.is_empty():
+		lines.append("配套脚本：%s" % companion_script_target_path)
 	var start_line: int = int(action.get("start_line", -1))
 	var end_line: int = int(action.get("end_line", -1))
 	if start_line >= 0 and end_line >= start_line:
-		lines.append("Lines: %d-%d" % [start_line + 1, end_line + 1])
-	lines.append("Risk: %s" % _localize_risk_level(str(action.get("risk_level", "unknown"))))
-	lines.append("Confidence: %.0f%%" % (float(action.get("confidence", 0.0)) * 100.0))
-	lines.append("Reason: %s" % str(action.get("match_reason", "No target match reason was recorded.")))
+		lines.append("行号：%d-%d" % [start_line + 1, end_line + 1])
+	lines.append("风险：%s" % _localize_risk_level(str(action.get("risk_level", "unknown"))))
+	lines.append("置信度：%.0f%%" % (float(action.get("confidence", 0.0)) * 100.0))
+	lines.append("原因：%s" % str(action.get("match_reason", "没有记录目标匹配原因。")))
 	if action_requires_secondary_confirmation(action):
-		lines.append("Warning: This change requires a second confirmation before execution.")
+		lines.append("警告：这个改动在执行前还需要再确认一次。")
 	lines.append("")
 	lines.append(_generate_diff_bbcode(
 		str(action.get("original_text", "")),
@@ -914,7 +1103,7 @@ func _build_action_review_bbcode(action: Dictionary) -> String:
 func _generate_diff_bbcode(old_text: String, new_text: String) -> String:
 	var old_lines: Array = old_text.split("\n")
 	var new_lines: Array = new_text.split("\n")
-	var bbcode: String = "[b][color=#E5C07B]Code Diff Preview[/color][/b]\n\n"
+	var bbcode: String = "[b][color=#E5C07B]内容差异预览[/color][/b]\n\n"
 
 	var i: int = 0
 	var j: int = 0
@@ -945,50 +1134,78 @@ func _truncate_preview_code(code: String, max_lines: int = 18) -> String:
 
 func _build_risk_badge(action: Dictionary) -> String:
 	if is_high_risk(action):
-		return "HIGH RISK"
+		return "高风险"
 	var risk_level: String = str(action.get("risk_level", ""))
 	if risk_level == "medium":
-		return "REVIEW"
+		return "需审查"
 	return ""
 
 func _localize_action_type(action_type: String) -> String:
 	match action_type:
 		ACTION_EXPLAIN_ONLY:
-			return "Explain Only"
+			return "仅解释"
 		ACTION_SHOW_DIFF_ONLY:
-			return "Preview Change"
+			return "预览改动"
 		ACTION_INSERT_AT_CARET:
-			return "Insert Code"
+			return "插入代码"
 		ACTION_REPLACE_SELECTION:
-			return "Replace Code"
+			return "替换代码"
+		ACTION_CREATE_SCENE:
+			return "创建场景"
 		_:
 			return action_type
 
 func _localize_execution_type(execution_type: String) -> String:
 	match execution_type:
 		EXEC_REPLACE_TEXT_RANGE:
-			return "Replace Text Range"
+			return "替换文本范围"
 		EXEC_REPLACE_CODE_BLOCK:
-			return "Replace Code Block"
+			return "替换代码块"
 		EXEC_REPLACE_FILE:
-			return "Replace Whole File"
+			return "替换整个文件"
 		EXEC_INSERT_AT_CARET:
-			return "Insert at Caret"
+			return "在光标处插入"
 		EXEC_INSERT_AT_FILE_END:
-			return "Append to File"
+			return "追加到文件末尾"
+		EXEC_CREATE_SCENE_FILE:
+			return "创建场景文件"
 		_:
 			return execution_type
+
+func _describe_operation(action: Dictionary) -> String:
+	match str(action.get("execution_type", "")):
+		EXEC_REPLACE_TEXT_RANGE:
+			return "替换选中的文本范围。"
+		EXEC_REPLACE_CODE_BLOCK:
+			return "替换匹配到的代码块。"
+		EXEC_REPLACE_FILE:
+			return "替换整个目标文件。"
+		EXEC_INSERT_AT_CARET:
+			return "在光标位置插入生成代码。"
+		EXEC_INSERT_AT_FILE_END:
+			return "把生成代码追加到文件末尾。"
+		EXEC_CREATE_SCENE_FILE:
+			if str(action.get("original_text", "")).strip_edges().is_empty():
+				return "创建一个新的场景文件。"
+			return "替换现有场景文件内容。"
+		_:
+			return _localize_action_type(str(action.get("action_type", ACTION_EXPLAIN_ONLY)))
+
+func _default_confirm_text(action: Dictionary) -> String:
+	if str(action.get("action_type", "")) == ACTION_CREATE_SCENE:
+		return "创建场景"
+	return "应用改动"
 
 func _localize_risk_level(risk_level: String) -> String:
 	match risk_level:
 		"low":
-			return "Low"
+			return "低"
 		"medium":
-			return "Medium"
+			return "中"
 		"high":
-			return "High"
+			return "高"
 		_:
-			return "Unknown"
+			return "未知"
 
 func _looks_like_gdscript_edit(code_text: String) -> bool:
 	var normalized_code: String = code_text.to_lower()
@@ -996,6 +1213,13 @@ func _looks_like_gdscript_edit(code_text: String) -> bool:
 		"extends ", "class_name ", "func ", "var ", "const ", "signal ",
 		"@tool", "@onready", "match ", "await ", "return ", "if ", "for ",
 	])
+
+func _looks_like_scene_file(code_text: String, language: String = "") -> bool:
+	var stripped: String = code_text.strip_edges()
+	var normalized_language: String = language.to_lower()
+	if normalized_language in ["tscn", "scene"] and stripped.begins_with("[gd_scene"):
+		return true
+	return stripped.begins_with("[gd_scene") and stripped.contains("[node ")
 
 func _contains_any(text: String, patterns: Array) -> bool:
 	for pattern in patterns:

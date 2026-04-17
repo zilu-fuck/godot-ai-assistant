@@ -11,8 +11,9 @@ const PRIORITY_SESSION_MEMORY: int = 80
 const PRIORITY_GIT_SUMMARY: int = 65
 const PRIORITY_PROJECT_MAP: int = 55
 const PRIORITY_DYNAMIC_SYSTEM_CONTEXT: int = 95
+const PLUGIN_SCRIPT_PREFIX: String = "res://addons/ai_assistant/"
 
-func build_runtime_context(memory: Dictionary = {}) -> Dictionary:
+func build_runtime_context(memory: Dictionary = {}, options: Dictionary = {}) -> Dictionary:
 	var script_context: Dictionary = get_script_context()
 	var recent_files: Array = []
 	if memory.has("recent_files") and memory["recent_files"] is Array:
@@ -22,15 +23,28 @@ func build_runtime_context(memory: Dictionary = {}) -> Dictionary:
 	var git_summary: Dictionary = _git_context.build_git_summary()
 	var script_path: String = get_current_script_path()
 	var scene_path: String = get_current_scene_path()
+	var include_script_context: bool = bool(options.get("include_script_context", true))
+	if _is_plugin_script(script_path):
+		include_script_context = false
+
 	var current_date: String = "%s %s" % [Time.get_date_string_from_system(), Time.get_time_string_from_system()]
-	var context_items: Array = _build_context_items(script_context, memory, git_summary, project_summary, current_date, script_path, scene_path)
+	var context_items: Array = _build_context_items(
+		script_context,
+		memory,
+		git_summary,
+		project_summary,
+		current_date,
+		script_path,
+		scene_path,
+		include_script_context
+	)
 
 	return {
 		"current_date": current_date,
-		"script_path": script_path,
+		"script_path": script_path if include_script_context else "",
 		"scene_path": scene_path,
-		"is_selected": script_context.get("is_selected", false),
-		"script_text": script_context.get("text", ""),
+		"is_selected": bool(script_context.get("is_selected", false)) if include_script_context else false,
+		"script_text": String(script_context.get("text", "")) if include_script_context else "",
 		"project_summary": project_summary,
 		"project_map_text": String(project_summary.get("map_text", "")),
 		"git_summary": git_summary,
@@ -76,7 +90,7 @@ func get_current_scene_path() -> String:
 		return ""
 	return scene_root.scene_file_path
 
-func _build_context_items(script_context: Dictionary, memory: Dictionary, git_summary: Dictionary, project_summary: Dictionary, current_date: String, script_path: String, scene_path: String) -> Array:
+func _build_context_items(script_context: Dictionary, memory: Dictionary, git_summary: Dictionary, project_summary: Dictionary, current_date: String, script_path: String, scene_path: String, include_script_context: bool) -> Array:
 	var items: Array = []
 	var dynamic_lines: Array = []
 
@@ -84,7 +98,7 @@ func _build_context_items(script_context: Dictionary, memory: Dictionary, git_su
 		dynamic_lines.append("当前时间：%s" % current_date)
 	if not scene_path.is_empty():
 		dynamic_lines.append("当前场景：%s" % scene_path)
-	if not script_path.is_empty():
+	if include_script_context and not script_path.is_empty():
 		dynamic_lines.append("当前脚本：%s" % script_path)
 
 	_append_item(
@@ -97,17 +111,18 @@ func _build_context_items(script_context: Dictionary, memory: Dictionary, git_su
 		"动态系统上下文"
 	)
 
-	var script_text: String = String(script_context.get("text", ""))
-	var is_selected: bool = bool(script_context.get("is_selected", false))
-	_append_item(
-		items,
-		"selection_text" if is_selected else "script_text",
-		script_path if not script_path.is_empty() else "active_script",
-		PRIORITY_SELECTION_TEXT if is_selected else PRIORITY_SCRIPT_TEXT,
-		script_text,
-		"runtime",
-		"选中代码" if is_selected else "当前脚本"
-	)
+	if include_script_context:
+		var script_text: String = String(script_context.get("text", ""))
+		var is_selected: bool = bool(script_context.get("is_selected", false))
+		_append_item(
+			items,
+			"selection_text" if is_selected else "script_text",
+			script_path if not script_path.is_empty() else "active_script",
+			PRIORITY_SELECTION_TEXT if is_selected else PRIORITY_SCRIPT_TEXT,
+			script_text,
+			"runtime",
+			"选中代码" if is_selected else "当前脚本"
+		)
 
 	_append_item(
 		items,
@@ -155,3 +170,6 @@ func _append_item(items: Array, kind: String, source: String, priority: int, tex
 		"title": title,
 		"truncated": false,
 	})
+
+func _is_plugin_script(script_path: String) -> bool:
+	return script_path.begins_with(PLUGIN_SCRIPT_PREFIX)
