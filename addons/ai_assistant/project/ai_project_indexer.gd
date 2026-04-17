@@ -158,3 +158,25 @@ func match_project_file_path(mention: String, files: Array) -> String:
 	if matches.size() == 1:
 		return matches[0]
 	return ""
+
+func resolve_project_path_hint(mention: String, preferred_dir: String = "res://") -> String:
+	var normalized: String = mention.replace("\\", "/").strip_edges()
+	if normalized.is_empty():
+		return ""
+	if normalized.begins_with("res://"):
+		return normalized.simplify_path()
+
+	if normalized.begins_with("./"):
+		normalized = normalized.substr(2)
+	while normalized.begins_with("/"):
+		normalized = normalized.substr(1)
+	if normalized.is_empty():
+		return ""
+
+	var base_dir: String = preferred_dir.strip_edges()
+	if base_dir.is_empty():
+		base_dir = "res://"
+
+	if normalized.contains("/"):
+		return ("res://" + normalized).simplify_path()
+	return base_dir.path_join(normalized).simplify_path()

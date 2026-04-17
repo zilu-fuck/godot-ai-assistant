@@ -14,6 +14,7 @@ const PROFILES: Dictionary = {
 		"supports_system_role": true,
 		"supports_reasoning_delta": false,
 		"supports_streaming": true,
+		"supports_non_streaming_fallback": true,
 		"supports_tool_calls": false,
 		"supports_cache_hints": false,
 	},
@@ -28,6 +29,7 @@ const PROFILES: Dictionary = {
 		"supports_system_role": false,
 		"supports_reasoning_delta": true,
 		"supports_streaming": true,
+		"supports_non_streaming_fallback": true,
 		"supports_tool_calls": false,
 		"supports_cache_hints": false,
 	},
@@ -42,6 +44,7 @@ const PROFILES: Dictionary = {
 		"supports_system_role": true,
 		"supports_reasoning_delta": false,
 		"supports_streaming": true,
+		"supports_non_streaming_fallback": true,
 		"supports_tool_calls": true,
 		"supports_cache_hints": false,
 	},
@@ -87,6 +90,7 @@ func _infer_profile(model: String, api_url: String) -> Dictionary:
 			"supports_system_role": true,
 			"supports_reasoning_delta": false,
 			"supports_streaming": true,
+			"supports_non_streaming_fallback": true,
 			"supports_tool_calls": true,
 			"supports_cache_hints": false,
 		}
@@ -103,6 +107,7 @@ func _infer_profile(model: String, api_url: String) -> Dictionary:
 			"supports_system_role": false,
 			"supports_reasoning_delta": true,
 			"supports_streaming": true,
+			"supports_non_streaming_fallback": true,
 			"supports_tool_calls": false,
 			"supports_cache_hints": false,
 		}
@@ -124,6 +129,7 @@ func _infer_profile(model: String, api_url: String) -> Dictionary:
 		"supports_system_role": true,
 		"supports_reasoning_delta": false,
 		"supports_streaming": true,
+		"supports_non_streaming_fallback": true,
 		"supports_tool_calls": lowered_url.contains("openai") or lowered_url.contains("openrouter"),
 		"supports_cache_hints": false,
 	}

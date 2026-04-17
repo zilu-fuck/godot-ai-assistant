@@ -263,6 +263,7 @@ func _build_manifest_entry(item: Dictionary, selected: bool, truncated: bool, es
 		"estimated_tokens": estimated_tokens,
 		"chars": text.length(),
 		"reason": reason,
+		"relevance_reasons": item.get("relevance_reasons", []),
 	}
 
 func _estimate_text_tokens(text: String) -> int:

@@ -2,7 +2,7 @@
 extends RefCounted
 class_name AIMemoryManager
 
-const SESSION_SCHEMA_VERSION: int = 2
+const SESSION_SCHEMA_VERSION: int = 3
 const AUTO_COMPACT_MESSAGE_THRESHOLD: int = 12
 const KEEP_RECENT_MESSAGES: int = 6
 const MAX_ITEM_LENGTH: int = 180
@@ -25,6 +25,8 @@ func ensure_session_shape(session: Dictionary) -> void:
 
 	if not session.has("action_log") or not (session["action_log"] is Array):
 		session["action_log"] = []
+	if not session.has("rollback_log") or not (session["rollback_log"] is Array):
+		session["rollback_log"] = []
 
 func register_context(session: Dictionary, runtime_context: Dictionary) -> void:
 	ensure_session_shape(session)

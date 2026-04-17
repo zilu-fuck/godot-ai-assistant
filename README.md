@@ -1,40 +1,27 @@
-# Godot AI Assistant v2.1
+# Godot AI Assistant v2.2
 
-这是一个面向 Godot 4 编辑器的 AI 编码助手插件项目，核心交付目录是 [addons/ai_assistant](E:/test/addons/ai_assistant)。
+Godot AI Assistant is an in-editor AI coding assistant for Godot 4. It works inside the editor Dock and combines project context, rules, memory, and apply workflows so AI output can be reviewed before it changes files.
 
-如果你是第一次接手这个仓库，优先看：
+## v2.2 Highlights
 
-- [tasks/必看.md](E:/test/tasks/必看.md)
-- [tasks/v2.1更新报告.md](E:/test/tasks/v2.1更新报告.md)
+- Runtime requests now move through explicit stages instead of a generic busy flag.
+- Each request exposes a stable `request_id` and richer debug information.
+- Network handling retries short failures once, can fall back from streaming to non-streaming, and keeps partial responses when possible.
+- AI Apply now records rollback data so the latest AI change in the current session can be undone safely.
+- Scene creation now participates in the same review and rollback flow, including companion scripts.
+- Context selection now boosts relevance for the active file, selection, prompt-mentioned symbols or paths, recent edits, and Git-oriented prompts.
 
-## 项目定位
+## Core Features
 
-这个插件不是普通聊天窗口，而是一个直接嵌入 Godot 编辑器工作流的 AI 助手。
+- Multi-session chat with local persistence
+- Project-aware prompting with active script, selection, scene, project index, Git summary, rules, and session memory
+- Structured prompt building with context budgeting and explainable context selection
+- Provider profile and adapter layer for OpenAI-compatible endpoints
+- Review-first apply flow with target resolution, diff preview, and high-risk confirmation
+- Scene creation flow for `.tscn` content and companion scripts
+- Undo entry point for the latest AI-generated change in the current session
 
-它会结合这些上下文来辅助开发：
-
-- 当前脚本
-- 当前选区
-- 当前场景路径
-- 项目文件索引
-- Git 摘要
-- 规则文件
-- 会话历史与结构化记忆
-
-## v2.1 当前能力
-
-- 多会话聊天与本地持久化
-- 流式输出、手动停止与错误回显
-- 当前脚本 / 选区上下文注入
-- 项目索引与 Git 摘要注入
-- 分层规则系统与 `@include`
-- 结构化记忆与自动压缩
-- Provider profile / adapter 抽象
-- 统一的 `ActionExecutor` 代码应用链路
-- 候选目标、diff 预览与高风险二次确认
-- Context Ring 上下文占用预估
-
-## 主要目录
+## Project Layout
 
 ```text
 addons/ai_assistant/
@@ -53,28 +40,26 @@ addons/ai_assistant/
   prompt/
 ```
 
-## 版本信息
+`addons/ai_assistant` is the release payload. The rest of the repository exists to support development, validation, and project handoff.
 
-- 插件版本：`2.1`
-- 插件配置文件：[plugin.cfg](E:/test/addons/ai_assistant/plugin.cfg)
-- 当前版本重点：完成运行时、规则、记忆、provider、动作执行分层，并补齐 v2.1 文档
+## Quick Start
 
-## 验证
+1. Open the project with Godot 4.
+2. Enable the plugin in `Project Settings -> Plugins`.
+3. Open the `AI助手` Dock.
+4. Configure your API URL, API key, and model.
+5. Send a request, review the generated plan or diff, and confirm before applying changes.
 
-本次版本已使用下面的 Godot CLI 做过编辑器级加载验证：
+## Validation
+
+Recommended release smoke checks:
 
 ```powershell
-C:\Users\s1897\scoop\shims\godot.exe --headless --path E:\test --editor --quit
+godot --headless --path E:\test --editor --quit-after 1
+git diff --check
 ```
 
-验证结果：
+## Version
 
-- 编辑器可正常加载项目
-- 插件脚本未出现新的 parse error / compile error
-- Git 文本检查已通过
-
-## 说明
-
-- `addons/ai_assistant` 是真正需要关注和交付的插件目录
-- `test/` 目录主要是测试和演示内容
-- 更完整的交接说明见 [tasks/必看.md](E:/test/tasks/必看.md)
+- Plugin version: `2.2`
+- Plugin config: `addons/ai_assistant/plugin.cfg`
