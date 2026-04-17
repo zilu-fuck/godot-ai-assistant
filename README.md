@@ -1,4 +1,22 @@
-# Godot AI Assistant v2.0.1
+# Godot AI Assistant v2.2-dev
+
+## v2.2 Runtime Upgrade
+
+- Runtime now tracks clearer request stages and exposes a stable `request_id` in debug/preview output.
+- Network requests can retry once on short failures, fall back from streaming to non-streaming, and preserve partial responses explicitly.
+- AI Apply now stores rollback data so the latest AI change in the current session can be undone with conflict checks.
+- Context selection now adds lightweight relevance boosts for the active file/selection, prompt-mentioned symbols or paths, Git-oriented prompts, and project-structure questions.
+- The regression checklist in [tasks/runtime_adaptation_checklist.md](/E:/test/tasks/runtime_adaptation_checklist.md) now covers state transitions, retry/fallback, partial responses, relevance ranking, and undo.
+
+## v2.2 Validation
+
+- Runtime/apply/undo validation script: [v22_validation.gd](/E:/test/test/v22_validation.gd)
+- Dock/UI validation script: [ui_validation.gd](/E:/test/test/ui_validation.gd)
+- One-shot validation runner: [run_v22_validations.ps1](/E:/test/test/run_v22_validations.ps1)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File E:\test\test\run_v22_validations.ps1
+```
 
 这是一个面向 Godot 4 编辑器的 AI 编码助手插件项目，核心交付目录是 [addons/ai_assistant](E:/test/addons/ai_assistant)。
 

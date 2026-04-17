@@ -5,7 +5,7 @@ class_name AIStorage
 
 const CONFIG_PATH = "user://ai_assistant_config.cfg"
 const SESSIONS_PATH = "user://ai_sessions.json"
-const SESSION_SCHEMA_VERSION = 2
+const SESSION_SCHEMA_VERSION = 3
 
 func load_config() -> Dictionary:
 	var config: ConfigFile = ConfigFile.new()
@@ -97,6 +97,8 @@ func _normalize_sessions(all_sessions: Dictionary) -> Dictionary:
 					memory[key] = defaults[key]
 		if not session.has("action_log") or not (session["action_log"] is Array):
 			session["action_log"] = []
+		if not session.has("rollback_log") or not (session["rollback_log"] is Array):
+			session["rollback_log"] = []
 		session["schema_version"] = SESSION_SCHEMA_VERSION
 		normalized[session_id] = session
 

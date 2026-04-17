@@ -18,6 +18,7 @@ extends Control
 @onready var stop_button: Button = $VBoxContainer/InputPanel/VBoxContainer/Actions/StopButton
 @onready var debug_button: Button = $VBoxContainer/InputPanel/VBoxContainer/Actions/DebugButton
 @onready var send_button: Button = $VBoxContainer/InputPanel/VBoxContainer/Actions/SendButton
+var undo_button: Button
 
 @onready var settings_dialog: AcceptDialog = $SettingsDialog
 @onready var api_url_input: LineEdit = $SettingsDialog/VBoxContainer/ApiUrlInput
@@ -85,6 +86,7 @@ func _ready() -> void:
 	_ensure_target_dialog_nodes()
 	_ensure_high_risk_dialog()
 	_ensure_scene_save_dialog()
+	_ensure_undo_button()
 
 	send_button.pressed.connect(_on_send_pressed)
 	stop_button.pressed.connect(_on_stop_pressed)
@@ -147,6 +149,8 @@ func _setup_modern_ui() -> void:
 		stop_button: "Stop",
 		debug_button: "Debug",
 	}
+	if undo_button != null:
+		all_icon_buttons[undo_button] = "Undo"
 
 	for button in all_icon_buttons:
 		button.icon = gui.get_theme_icon(all_icon_buttons[button], "EditorIcons")
@@ -154,6 +158,20 @@ func _setup_modern_ui() -> void:
 		button.flat = true
 		button.custom_minimum_size = Vector2(28, 28)
 		_set_tooltip(button)
+
+func _ensure_undo_button() -> void:
+	if undo_button != null:
+		return
+
+	var actions: HBoxContainer = $VBoxContainer/InputPanel/VBoxContainer/Actions
+	undo_button = Button.new()
+	undo_button.name = "UndoButton"
+	undo_button.flat = true
+	undo_button.visible = true
+	undo_button.disabled = true
+	actions.add_child(undo_button)
+	actions.move_child(undo_button, max(0, send_button.get_index()))
+	undo_button.pressed.connect(_on_undo_pressed)
 
 func _setup_runtime_debug_label() -> void:
 	var container: VBoxContainer = $VBoxContainer/InputPanel/VBoxContainer
@@ -284,6 +302,8 @@ func _set_tooltip(button: Button) -> void:
 		button.tooltip_text = "删除当前会话"
 	elif button == debug_button:
 		button.tooltip_text = "分析已复制的报错"
+	elif button == undo_button:
+		button.tooltip_text = "撤销上次 AI 改动"
 
 func _sync_runtime_state_ui() -> void:
 	var busy: bool = runtime.is_busy()
@@ -296,6 +316,20 @@ func _sync_runtime_state_ui() -> void:
 	compress_button.disabled = busy
 	delete_chat_button.disabled = busy
 	session_selector.disabled = busy
+	if undo_button != null:
+		undo_button.disabled = busy or not _has_undoable_change()
+
+func _has_undoable_change() -> bool:
+	if current_session_id.is_empty() or not all_sessions.has(current_session_id):
+		return false
+	var session: Dictionary = all_sessions[current_session_id]
+	if not session.has("rollback_log") or not (session["rollback_log"] is Array):
+		return false
+	for index in range(session["rollback_log"].size() - 1, -1, -1):
+		var entry: Variant = session["rollback_log"][index]
+		if entry is Dictionary and not bool(entry.get("rolled_back", false)):
+			return true
+	return false
 
 func _update_runtime_debug_label(bbcode_text: String) -> void:
 	if runtime_debug_label == null:
@@ -539,26 +573,39 @@ func _on_send_pressed() -> void:
 	stream_temp_node = renderer.create_stream_node()
 
 func _on_chunk_received(content_delta: String, reasoning_delta: String) -> void:
+	runtime.handle_stream_delta(content_delta, reasoning_delta)
 	if not reasoning_delta.is_empty():
 		current_ai_reasoning += reasoning_delta
 	if not content_delta.is_empty():
 		current_ai_content += content_delta
 	renderer.update_stream_node(stream_temp_node, current_ai_content, current_ai_reasoning)
 
-func _on_stream_completed() -> void:
-	runtime.mark_stream_completed()
+func _on_stream_completed(response_info: Dictionary = {}) -> void:
+	runtime.handle_stream_completed(response_info)
 	_finish_streaming(false)
 
-func _on_stream_failed(error_message: String) -> void:
+func _on_stream_failed(error_message: String, failure_info: Dictionary = {}) -> void:
+	var recovery: Dictionary = runtime.handle_stream_failure(error_message, failure_info)
+	_update_runtime_debug_label(String(recovery.get("preview_bbcode", "")))
+	if str(recovery.get("action", "")) == "restarted":
+		var retry_message: String = str(recovery.get("message", "")).strip_edges()
+		if not retry_message.is_empty():
+			var retry_tip = renderer.create_system_tip("[color=#7f848e][i]%s[/i][/color]" % retry_message)
+			message_list.add_child(retry_tip)
+		_sync_runtime_state_ui()
+		return
+
 	if is_instance_valid(stream_temp_node):
 		stream_temp_node.queue_free()
 
-	runtime.mark_stream_failed()
 	_sync_runtime_state_ui()
 
 	var final_message: String = "[color=#E06C75]%s[/color]" % error_message
 	if not current_ai_content.is_empty():
 		final_message = current_ai_content + "\n\n[color=#E06C75][i](%s)[/i][/color]" % error_message
+	var recovery_message: String = str(recovery.get("message", "")).strip_edges()
+	if not recovery_message.is_empty():
+		final_message += "\n\n[color=#E5C07B][i](%s)[/i][/color]" % recovery_message
 
 	current_ai_content = final_message
 	current_ai_reasoning = ""
@@ -596,6 +643,29 @@ func _finish_streaming(is_forced: bool) -> void:
 	insert_button.disabled = renderer.last_generated_code == ""
 	storage.save_sessions(all_sessions)
 	_refresh_context_meter()
+
+func _on_undo_pressed() -> void:
+	if current_session_id.is_empty() or not all_sessions.has(current_session_id):
+		return
+
+	runtime.begin_manual_operation()
+	_sync_runtime_state_ui()
+	var result: Dictionary = runtime.undo_last_ai_change(all_sessions[current_session_id], _build_editor_context())
+	runtime.finish_manual_operation()
+	_sync_runtime_state_ui()
+
+	if not bool(result.get("ok", false)):
+		renderer.render_message("assistant", "[color=#E06C75]%s[/color]" % str(result.get("message", "Undo failed.")))
+		return
+
+	var target_paths: Array = result.get("target_paths", [])
+	if not target_paths.is_empty():
+		var primary_path: String = str(target_paths[0]).strip_edges()
+		if not primary_path.is_empty() and FileAccess.file_exists(primary_path):
+			_focus_target_resource(primary_path)
+
+	storage.save_sessions(all_sessions)
+	renderer.render_message("assistant", "[color=#56B6C2][i]Reverted the latest AI change for this session.[/i][/color]")
 
 func _on_compress_pressed() -> void:
 	if current_session_id == "" or all_sessions.is_empty() or is_compressing:
@@ -847,6 +917,11 @@ func _run_pending_action() -> void:
 		if not all_sessions[current_session_id].has("action_log") or not (all_sessions[current_session_id]["action_log"] is Array):
 			all_sessions[current_session_id]["action_log"] = []
 		all_sessions[current_session_id]["action_log"].append(result.get("log_entry", {}))
+		if not all_sessions[current_session_id].has("rollback_log") or not (all_sessions[current_session_id]["rollback_log"] is Array):
+			all_sessions[current_session_id]["rollback_log"] = []
+		var rollback_entry: Dictionary = result.get("rollback_entry", {})
+		if not rollback_entry.is_empty():
+			all_sessions[current_session_id]["rollback_log"].append(rollback_entry)
 		storage.save_sessions(all_sessions)
 
 func _validate_scene_creation_content(scene_text: String) -> Dictionary:
@@ -1027,7 +1102,8 @@ func _on_new_chat_pressed() -> void:
 			"summary_text": "",
 		},
 		"action_log": [],
-		"schema_version": 2,
+		"rollback_log": [],
+		"schema_version": 3,
 	}
 	_sync_session_ui()
 	_load_session_to_ui(current_session_id)

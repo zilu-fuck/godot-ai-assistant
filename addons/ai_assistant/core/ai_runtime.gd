@@ -7,9 +7,18 @@ const CONTEXT_WATCH_THRESHOLD: float = 0.6
 const CONTEXT_COMPRESS_THRESHOLD: float = 0.8
 const CONTEXT_LIMIT_THRESHOLD: float = 0.95
 const STATE_IDLE: String = "idle"
-const STATE_PREPARING: String = "preparing"
+const STATE_COLLECT_CONTEXT: String = "collect_context"
+const STATE_LOAD_RULES: String = "load_rules"
+const STATE_BUILD_REQUEST: String = "build_request"
+const STATE_SEND_REQUEST: String = "send_request"
 const STATE_STREAMING: String = "streaming"
-const STATE_AWAITING_ACTION_CONFIRMATION: String = "awaiting_action_confirmation"
+const STATE_NORMALIZE_RESPONSE: String = "normalize_response"
+const STATE_PLAN_ACTION: String = "plan_action"
+const STATE_AWAIT_REVIEW: String = "await_review"
+const STATE_PREPARING: String = STATE_BUILD_REQUEST
+const STATE_AWAITING_ACTION_CONFIRMATION: String = STATE_AWAIT_REVIEW
+const STATE_APPLYING: String = "applying"
+const STATE_PERSISTING: String = "persisting"
 const STATE_COMPLETED: String = "completed"
 const STATE_FAILED: String = "failed"
 const STATE_STOPPED: String = "stopped"
@@ -31,6 +40,10 @@ var last_request_preview: Dictionary = {}
 var runtime_state: String = STATE_IDLE
 var pending_action: Dictionary = {}
 var last_response_actions: Array = []
+var current_request_id: String = ""
+var last_error_message: String = ""
+var _request_serial: int = 0
+var _active_request: Dictionary = {}
 
 func setup(net_client: AINetClient, max_history_length: int, action_executor: AIActionExecutor = null, project_indexer: AIProjectIndexer = null) -> void:
 	_net_client = net_client
@@ -39,6 +52,7 @@ func setup(net_client: AINetClient, max_history_length: int, action_executor: AI
 	_project_indexer = project_indexer
 
 func start_chat_request(prompt: String, session: Dictionary, api_settings: Dictionary) -> Dictionary:
+	return _start_chat_request_v22(prompt, session, api_settings)
 	_memory_manager.ensure_session_shape(session)
 	last_response_actions.clear()
 
@@ -139,27 +153,39 @@ func get_script_context() -> Dictionary:
 
 func set_state(next_state: String) -> void:
 	runtime_state = next_state
+	_sync_preview_snapshot()
 
 func get_state() -> String:
 	return runtime_state
 
 func is_busy() -> bool:
-	return runtime_state == STATE_PREPARING or runtime_state == STATE_STREAMING
+	return runtime_state in [
+		STATE_COLLECT_CONTEXT,
+		STATE_LOAD_RULES,
+		STATE_BUILD_REQUEST,
+		STATE_SEND_REQUEST,
+		STATE_STREAMING,
+		STATE_NORMALIZE_RESPONSE,
+		STATE_PLAN_ACTION,
+		STATE_APPLYING,
+		STATE_PERSISTING,
+	]
 
 func begin_streaming() -> void:
 	set_state(STATE_STREAMING)
 
 func mark_stream_completed() -> void:
-	set_state(STATE_COMPLETED)
+	set_state(STATE_NORMALIZE_RESPONSE)
 
 func mark_stream_failed() -> void:
+	last_error_message = ""
 	set_state(STATE_FAILED)
 
 func mark_stream_stopped() -> void:
 	set_state(STATE_STOPPED)
 
 func begin_manual_operation() -> void:
-	set_state(STATE_PREPARING)
+	set_state(STATE_PERSISTING)
 
 func finish_manual_operation() -> void:
 	if pending_action.is_empty():
@@ -187,6 +213,282 @@ func cancel_action_review() -> void:
 
 func get_last_request_preview() -> Dictionary:
 	return last_request_preview.duplicate(true)
+
+func get_request_id() -> String:
+	return current_request_id
+
+func _start_chat_request_v22(prompt: String, session: Dictionary, api_settings: Dictionary) -> Dictionary:
+	_memory_manager.ensure_session_shape(session)
+	last_response_actions.clear()
+
+	var cleaned_prompt: String = prompt.strip_edges()
+	_begin_request(cleaned_prompt)
+	if cleaned_prompt.is_empty():
+		return {"ok": false, "reason": "empty_prompt", "message": "Please enter a prompt before sending the request."}
+	if String(api_settings.get("key", "")).is_empty():
+		return {"ok": false, "reason": "missing_api_key", "message": "Please fill in the API key before sending the request."}
+	if _net_client == null:
+		return {"ok": false, "reason": "missing_net_client", "message": "The network client is not ready yet. Reload the plugin and try again."}
+	if not session.has("history"):
+		return {"ok": false, "reason": "missing_session", "message": "The current session is unavailable. Create or reopen a session and try again."}
+
+	set_state(STATE_COLLECT_CONTEXT)
+	var model: String = String(api_settings.get("model", "deepseek-chat"))
+	var profile: Dictionary = _provider_profiles.resolve_profile(model, String(api_settings.get("url", "")))
+	var context: Dictionary = _context_builder.build_runtime_context(session.get("memory", {}), _build_context_options(cleaned_prompt))
+	_memory_manager.register_context(session, context)
+	var auto_compact: Dictionary = _memory_manager.maybe_auto_compact(session)
+	set_state(STATE_LOAD_RULES)
+	var rules: Dictionary = _rules_loader.load_rules(String(context.get("script_path", "")))
+	set_state(STATE_BUILD_REQUEST)
+	var request: Dictionary = _prompt_builder.build_request({
+		"prompt": cleaned_prompt,
+		"history": session.get("history", []),
+		"model": model,
+		"profile": profile,
+		"rules": rules,
+		"context": context,
+		"memory": session.get("memory", {}),
+		"max_history_length": _max_history_length,
+	}, _message_normalizer)
+	var provider_request: Dictionary = _build_provider_request(model, request, profile, true)
+	var fallback_request: Dictionary = {}
+	if bool(profile.get("supports_non_streaming_fallback", true)):
+		fallback_request = _build_provider_request(model, request, profile, false)
+	var usage: Dictionary = _build_usage_summary({
+		"prompt": cleaned_prompt,
+		"profile": profile,
+		"rules": rules,
+		"memory": session.get("memory", {}),
+		"context": context,
+		"request": request,
+		"payload": provider_request["payload"],
+	})
+
+	session["history"].append({"role": "user", "content": cleaned_prompt})
+	last_request_preview = {
+		"request_id": current_request_id,
+		"prompt": cleaned_prompt,
+		"model": model,
+		"profile": profile,
+		"provider_capabilities": _extract_provider_capabilities(profile),
+		"rules": rules,
+		"memory": session.get("memory", {}),
+		"context": context,
+		"request": request,
+		"context_manifest": request.get("context_manifest", []),
+		"dropped_context_items": request.get("dropped_context_items", []),
+		"payload": provider_request["payload"],
+		"usage": usage,
+		"auto_compact": auto_compact,
+		"network": {
+			"retry_count": 0,
+			"fallback_used": false,
+			"transport": "streaming",
+			"partial_response_kept": false,
+		},
+		"last_error": "",
+	}
+	_sync_preview_snapshot()
+	_active_request = {
+		"request_id": current_request_id,
+		"url": String(api_settings.get("url", "")),
+		"key": String(api_settings.get("key", "")),
+		"model": model,
+		"profile": profile.duplicate(true),
+		"prompt": cleaned_prompt,
+		"request": request.duplicate(true),
+		"stream_request": provider_request.duplicate(true),
+		"fallback_request": fallback_request.duplicate(true),
+		"retry_count": 0,
+		"fallback_used": false,
+		"allow_fallback": not fallback_request.is_empty(),
+	}
+
+	set_state(STATE_SEND_REQUEST)
+	var start_result: Dictionary = _start_active_request("initial")
+	if not bool(start_result.get("ok", false)):
+		last_error_message = String(start_result.get("message", "Failed to start the model request."))
+		last_request_preview["start_error"] = last_error_message
+		last_request_preview["last_error"] = last_error_message
+		set_state(STATE_FAILED)
+		return {
+			"ok": false,
+			"reason": "start_stream_failed",
+			"message": last_error_message,
+			"debug_label": _build_debug_label(last_request_preview),
+			"preview_bbcode": build_request_preview_bbcode(last_request_preview),
+			"request_preview": get_last_request_preview(),
+		}
+
+	return {
+		"ok": true,
+		"debug_label": _build_debug_label(last_request_preview),
+		"preview_bbcode": build_request_preview_bbcode(last_request_preview),
+		"auto_compacted": bool(auto_compact.get("performed", false)),
+		"memory_summary": String(auto_compact.get("summary_text", "")),
+		"usage": usage,
+		"request_preview": get_last_request_preview(),
+	}
+
+func _begin_request(prompt: String) -> void:
+	_request_serial += 1
+	current_request_id = "%s-%04d" % [str(Time.get_unix_time_from_system()), _request_serial]
+	last_error_message = ""
+	_active_request = {}
+	last_request_preview = {
+		"request_id": current_request_id,
+		"prompt": prompt,
+		"state_history": [],
+		"network": {
+			"retry_count": 0,
+			"fallback_used": false,
+			"transport": "streaming",
+			"partial_response_kept": false,
+		},
+		"last_error": "",
+	}
+	set_state(STATE_IDLE)
+
+func _build_provider_request(model: String, request: Dictionary, profile: Dictionary, stream_mode: bool) -> Dictionary:
+	return _provider_adapter.build_request({
+		"model": model,
+		"messages": request["messages"],
+		"temperature": float(profile.get("temperature", 0.7)),
+		"stream": stream_mode,
+		"max_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
+		"profile": profile,
+	})
+
+func _start_active_request(label: String) -> Dictionary:
+	if _active_request.is_empty():
+		return {
+			"ok": false,
+			"message": "No active request is available.",
+		}
+
+	var request_payload: Dictionary = _active_request.get("stream_request", {})
+	var stream_mode: bool = true
+	if bool(_active_request.get("fallback_used", false)):
+		request_payload = _active_request.get("fallback_request", {})
+		stream_mode = false
+
+	last_request_preview["payload"] = request_payload.get("payload", {})
+	var network: Dictionary = last_request_preview.get("network", {})
+	network["retry_count"] = int(_active_request.get("retry_count", 0))
+	network["fallback_used"] = bool(_active_request.get("fallback_used", false))
+	network["transport"] = "non_streaming" if bool(_active_request.get("fallback_used", false)) else "streaming"
+	network["last_attempt_label"] = label
+	last_request_preview["network"] = network
+	_sync_preview_snapshot()
+
+	return _net_client.start_request(
+		String(_active_request.get("url", "")),
+		String(_active_request.get("key", "")),
+		String(request_payload.get("body", "")),
+		{
+			"stream": stream_mode,
+			"label": label,
+			"request_id": current_request_id,
+			"retry_count": int(_active_request.get("retry_count", 0)),
+			"fallback_used": bool(_active_request.get("fallback_used", false)),
+		}
+	)
+
+func _sync_preview_snapshot() -> void:
+	if last_request_preview.is_empty():
+		return
+
+	var state_history: Array = last_request_preview.get("state_history", [])
+	if state_history.is_empty() or str(state_history.back().get("state", "")) != runtime_state:
+		state_history.append({
+			"state": runtime_state,
+			"at": "%s %s" % [Time.get_date_string_from_system(), Time.get_time_string_from_system()],
+		})
+
+	last_request_preview["request_id"] = current_request_id
+	last_request_preview["runtime_state"] = runtime_state
+	last_request_preview["state_history"] = state_history
+	last_request_preview["last_error"] = last_error_message
+	last_request_preview["runtime_snapshot"] = {
+		"request_id": current_request_id,
+		"state": runtime_state,
+		"last_error": last_error_message,
+		"network": last_request_preview.get("network", {}),
+	}
+
+func handle_stream_delta(content_delta: String, reasoning_delta: String) -> void:
+	if not content_delta.is_empty() or not reasoning_delta.is_empty():
+		if runtime_state == STATE_SEND_REQUEST:
+			set_state(STATE_STREAMING)
+		var network: Dictionary = last_request_preview.get("network", {})
+		if not content_delta.is_empty():
+			network["received_content_chars"] = int(network.get("received_content_chars", 0)) + content_delta.length()
+		if not reasoning_delta.is_empty():
+			network["received_reasoning_chars"] = int(network.get("received_reasoning_chars", 0)) + reasoning_delta.length()
+		last_request_preview["network"] = network
+		_sync_preview_snapshot()
+
+func handle_stream_completed(response_info: Dictionary = {}) -> void:
+	var network: Dictionary = last_request_preview.get("network", {})
+	network["completed_via"] = str(response_info.get("completed_via", "stream"))
+	network["response_code"] = int(response_info.get("response_code", -1))
+	last_request_preview["network"] = network
+	set_state(STATE_NORMALIZE_RESPONSE)
+
+func handle_stream_failure(error_message: String, failure_info: Dictionary = {}) -> Dictionary:
+	last_error_message = error_message
+	last_request_preview["last_error"] = error_message
+
+	var network: Dictionary = last_request_preview.get("network", {})
+	network["last_failure"] = failure_info.duplicate(true)
+	last_request_preview["network"] = network
+	_sync_preview_snapshot()
+
+	var response_code: int = int(failure_info.get("response_code", -1))
+	var partial_content: String = str(failure_info.get("partial_content", ""))
+	var failure_kind: String = str(failure_info.get("failure_kind", "unknown"))
+	var can_retry_http: bool = response_code >= 500 and response_code < 600
+	var has_partial: bool = not partial_content.is_empty()
+	var can_retry: bool = not has_partial and int(_active_request.get("retry_count", 0)) < 1 and response_code < 500 and (
+		failure_kind in ["connect_timeout", "first_byte_timeout", "connection_interrupted", "response_interrupted", "poll_failed", "request_failed"]
+		or can_retry_http
+	)
+
+	if can_retry:
+		_active_request["retry_count"] = int(_active_request.get("retry_count", 0)) + 1
+		set_state(STATE_SEND_REQUEST)
+		var retry_result: Dictionary = _start_active_request("retry_stream")
+		if bool(retry_result.get("ok", false)):
+			return {
+				"action": "restarted",
+				"message": "Network hiccup detected. Retrying the request once.",
+				"preview_bbcode": build_request_preview_bbcode(last_request_preview),
+			}
+
+	if not has_partial and bool(_active_request.get("allow_fallback", false)) and not bool(_active_request.get("fallback_used", false)) and response_code < 500:
+		_active_request["fallback_used"] = true
+		set_state(STATE_SEND_REQUEST)
+		var fallback_result: Dictionary = _start_active_request("fallback_non_stream")
+		if bool(fallback_result.get("ok", false)):
+			return {
+				"action": "restarted",
+				"message": "Streaming failed before content arrived. Falling back to a non-streaming response.",
+				"preview_bbcode": build_request_preview_bbcode(last_request_preview),
+			}
+
+	if has_partial:
+		var partial_network: Dictionary = last_request_preview.get("network", {})
+		partial_network["partial_response_kept"] = true
+		last_request_preview["network"] = partial_network
+
+	set_state(STATE_FAILED)
+	return {
+		"action": "finalize",
+		"message": "Partial response kept after the stream failed." if has_partial else "",
+		"keep_partial": has_partial,
+		"preview_bbcode": build_request_preview_bbcode(last_request_preview),
+	}
 
 func preview_chat_request(prompt: String, session: Dictionary, api_settings: Dictionary) -> Dictionary:
 	_memory_manager.ensure_session_shape(session)
@@ -252,6 +554,7 @@ func plan_assistant_response(content: String) -> Dictionary:
 	return plan_assistant_response_for_prompt(String(last_request_preview.get("prompt", "")), content)
 
 func plan_assistant_response_for_prompt(prompt: String, content: String) -> Dictionary:
+	set_state(STATE_PLAN_ACTION)
 	var code_blocks: Array = _extract_code_blocks(content)
 	var response_intent: String = _classify_response_intent(prompt, content, code_blocks)
 	var actions: Array = []
@@ -265,8 +568,11 @@ func plan_assistant_response_for_prompt(prompt: String, content: String) -> Dict
 	last_response_actions = actions.duplicate(true)
 	last_request_preview["response_intent"] = response_intent
 	last_request_preview["response_actions"] = get_response_actions()
+	last_request_preview["action_plan_summary"] = _build_action_plan_summary(actions, response_intent)
 	if not prompt.strip_edges().is_empty():
 		last_request_preview["prompt"] = prompt
+	if actions.is_empty():
+		set_state(STATE_COMPLETED)
 
 	return {
 		"response_intent": response_intent,
@@ -596,6 +902,7 @@ func mark_pending_action_secondary_confirmed() -> Dictionary:
 	return get_pending_action()
 
 func execute_pending_action(editor_context: Dictionary) -> Dictionary:
+	return _execute_pending_action_v22(editor_context)
 	if _action_executor == null:
 		return {
 			"ok": false,
@@ -635,7 +942,287 @@ func execute_pending_action(editor_context: Dictionary) -> Dictionary:
 	clear_pending_action(STATE_IDLE)
 	return result
 
+func _execute_pending_action_v22(editor_context: Dictionary) -> Dictionary:
+	if _action_executor == null:
+		return {
+			"ok": false,
+			"reason": "missing_action_executor",
+			"error": "Action executor is not configured.",
+		}
+
+	var action: Dictionary = get_pending_action()
+	if action.is_empty():
+		return {
+			"ok": false,
+			"reason": "missing_pending_action",
+			"error": "There is no pending action to execute.",
+		}
+
+	var confirmed_action: Dictionary = action.duplicate(true)
+	confirmed_action["confirmed"] = true
+	var target_script_path: String = str(confirmed_action.get("target_path", "")).strip_edges()
+	var active_script_path: String = str(editor_context.get("active_script_path", "")).strip_edges()
+	var execution_type: String = str(confirmed_action.get("execution_type", ""))
+	var code_edit: CodeEdit = editor_context.get("code_edit", null)
+	var gate: Dictionary = _action_executor.can_execute_action(confirmed_action, code_edit, true)
+	if not bool(gate.get("ok", false)):
+		return {
+			"ok": false,
+			"reason": str(gate.get("reason", "blocked")),
+			"error": str(gate.get("message", "Action execution was blocked.")),
+		}
+
+	set_state(STATE_APPLYING)
+	var rollback_targets: Array = []
+	var result: Dictionary = {}
+
+	if execution_type == AIActionExecutor.EXEC_CREATE_SCENE_FILE:
+		result = _execute_scene_creation_action_with_rollback(confirmed_action, target_script_path)
+		rollback_targets = result.get("rollback_targets", [])
+	elif not target_script_path.is_empty() and (code_edit == null or target_script_path != active_script_path):
+		result = _execute_action_in_file_with_rollback(confirmed_action, target_script_path)
+		rollback_targets = result.get("rollback_targets", [])
+	else:
+		result = _execute_action_in_editor_with_rollback(confirmed_action, code_edit, active_script_path)
+		rollback_targets = result.get("rollback_targets", [])
+
+	if bool(result.get("ok", false)):
+		set_state(STATE_PERSISTING)
+		result["rollback_entry"] = _build_rollback_entry(confirmed_action, rollback_targets)
+		clear_pending_action(STATE_COMPLETED)
+	else:
+		last_error_message = str(result.get("error", "Action execution failed."))
+		clear_pending_action(STATE_FAILED)
+	return result
+
+func undo_last_ai_change(session: Dictionary, editor_context: Dictionary) -> Dictionary:
+	_memory_manager.ensure_session_shape(session)
+	var rollback_log: Array = session.get("rollback_log", [])
+	var rollback_index: int = -1
+	var rollback_entry: Dictionary = {}
+	for index in range(rollback_log.size() - 1, -1, -1):
+		var candidate: Variant = rollback_log[index]
+		if candidate is Dictionary and not bool(candidate.get("rolled_back", false)):
+			rollback_index = index
+			rollback_entry = candidate
+			break
+
+	if rollback_index < 0 or rollback_entry.is_empty():
+		return {
+			"ok": false,
+			"reason": "missing_rollback_entry",
+			"message": "No undoable AI change was found in this session.",
+		}
+
+	var targets: Array = rollback_entry.get("targets", [])
+	for target in targets:
+		if not (target is Dictionary):
+			continue
+		var current_state: Dictionary = _read_target_state(str(target.get("path", "")), editor_context)
+		if str(current_state.get("text", "")) != str(target.get("after_text", "")):
+			return {
+				"ok": false,
+				"reason": "rollback_conflict",
+				"message": "Undo was blocked because the target was modified after the AI change.",
+			}
+
+	set_state(STATE_APPLYING)
+	var restored_paths: Array = []
+	for target in targets:
+		if not (target is Dictionary):
+			continue
+		var target_path: String = str(target.get("path", "")).strip_edges()
+		if target_path.is_empty():
+			continue
+		if bool(target.get("remove_on_undo", false)):
+			var delete_result: Dictionary = _delete_text_file(target_path)
+			if not bool(delete_result.get("ok", false)):
+				return {
+					"ok": false,
+					"reason": "delete_failed",
+					"message": str(delete_result.get("error", "Failed to remove the generated file during undo.")),
+				}
+		else:
+			var write_result: Dictionary = _restore_target_state(target_path, str(target.get("before_text", "")), editor_context)
+			if not bool(write_result.get("ok", false)):
+				return {
+					"ok": false,
+					"reason": "write_failed",
+					"message": str(write_result.get("error", "Failed to restore the target during undo.")),
+				}
+		restored_paths.append(target_path)
+
+	rollback_entry["rolled_back"] = true
+	rollback_entry["rolled_back_at"] = "%s %s" % [Time.get_date_string_from_system(), Time.get_time_string_from_system()]
+	rollback_log[rollback_index] = rollback_entry
+	session["rollback_log"] = rollback_log
+	set_state(STATE_COMPLETED)
+	return {
+		"ok": true,
+		"target_paths": restored_paths,
+	}
+
+func _execute_action_in_editor_with_rollback(action: Dictionary, code_edit: CodeEdit, active_script_path: String) -> Dictionary:
+	if code_edit == null:
+		return {
+			"ok": false,
+			"error": "No active editor is available for this action.",
+		}
+
+	var before_text: String = code_edit.text
+	var transformed: Dictionary = _action_executor.apply_action_to_text(action, before_text)
+	if not bool(transformed.get("ok", false)):
+		return {
+			"ok": false,
+			"error": str(transformed.get("message", "Failed to prepare the text transform.")),
+		}
+
+	var result: Dictionary = _action_executor.execute_action(action, code_edit)
+	if not bool(result.get("ok", false)):
+		return result
+
+	return {
+		"ok": true,
+		"applied": true,
+		"target_path": active_script_path,
+		"log_entry": result.get("log_entry", {}),
+		"rollback_targets": [
+			_build_rollback_target(active_script_path, before_text, str(transformed.get("text", before_text)), true),
+		],
+	}
+
+func _execute_action_in_file_with_rollback(action: Dictionary, target_script_path: String) -> Dictionary:
+	var before_text: String = _read_text_file(target_script_path)
+	var existed_before: bool = FileAccess.file_exists(target_script_path)
+	if target_script_path.is_empty() or (before_text.is_empty() and not existed_before):
+		return {
+			"ok": false,
+			"error": "Unable to open the target file for this action.",
+		}
+
+	var transformed: Dictionary = _action_executor.apply_action_to_text(action, before_text)
+	if not bool(transformed.get("ok", false)):
+		return {
+			"ok": false,
+			"error": str(transformed.get("message", "Failed to transform the target file.")),
+		}
+
+	var write_result: Dictionary = _write_text_file(target_script_path, str(transformed.get("text", before_text)))
+	if not bool(write_result.get("ok", false)):
+		return {
+			"ok": false,
+			"error": str(write_result.get("error", "Failed to write the target file.")),
+		}
+
+	return {
+		"ok": true,
+		"applied": true,
+		"target_path": target_script_path,
+		"log_entry": _action_executor.create_log_entry(action, true),
+		"rollback_targets": [
+			_build_rollback_target(target_script_path, before_text, str(transformed.get("text", before_text)), existed_before),
+		],
+	}
+
+func _execute_scene_creation_action_with_rollback(action: Dictionary, target_scene_path: String) -> Dictionary:
+	var final_action: Dictionary = action.duplicate(true)
+	var final_scene_text: String = str(final_action.get("content", ""))
+	var companion_script_content: String = str(final_action.get("companion_script_content", "")).strip_edges()
+	var companion_script_target_path: String = str(final_action.get("companion_script_target_path", "")).strip_edges()
+	var rollback_targets: Array = []
+	var scene_before_text: String = _read_text_file(target_scene_path)
+	var scene_existed_before: bool = FileAccess.file_exists(target_scene_path)
+
+	if not companion_script_content.is_empty():
+		if companion_script_target_path.is_empty():
+			companion_script_target_path = _derive_scene_companion_script_path(target_scene_path, companion_script_content)
+		if companion_script_target_path.is_empty():
+			return {
+				"ok": false,
+				"error": "Unable to resolve the companion script path.",
+			}
+
+		var companion_before_text: String = _read_text_file(companion_script_target_path)
+		var companion_existed_before: bool = FileAccess.file_exists(companion_script_target_path)
+		var script_write_result: Dictionary = _write_text_file(companion_script_target_path, companion_script_content)
+		if not bool(script_write_result.get("ok", false)):
+			return script_write_result
+		rollback_targets.append(_build_rollback_target(companion_script_target_path, companion_before_text, companion_script_content, companion_existed_before))
+
+		final_scene_text = _inject_scene_companion_script(final_scene_text, companion_script_target_path)
+		final_action["companion_script_target_path"] = companion_script_target_path
+		final_action["content"] = final_scene_text
+
+	var scene_write_result: Dictionary = _write_text_file(target_scene_path, final_scene_text)
+	if not bool(scene_write_result.get("ok", false)):
+		return scene_write_result
+
+	rollback_targets.push_front(_build_rollback_target(target_scene_path, scene_before_text, final_scene_text, scene_existed_before))
+	return {
+		"ok": true,
+		"applied": true,
+		"target_path": target_scene_path,
+		"log_entry": _action_executor.create_log_entry(final_action, true),
+		"rollback_targets": rollback_targets,
+	}
+
+func _build_rollback_target(path: String, before_text: String, after_text: String, existed_before: bool) -> Dictionary:
+	return {
+		"path": path,
+		"before_text": before_text,
+		"after_text": after_text,
+		"existed_before": existed_before,
+		"remove_on_undo": not existed_before,
+	}
+
+func _build_rollback_entry(action: Dictionary, targets: Array) -> Dictionary:
+	return {
+		"action_type": str(action.get("action_type", "unknown")),
+		"execution_type": str(action.get("execution_type", "unknown")),
+		"risk_level": str(action.get("risk_level", "unknown")),
+		"target_label": str(action.get("target_label", action.get("label", ""))),
+		"timestamp": "%s %s" % [Time.get_date_string_from_system(), Time.get_time_string_from_system()],
+		"rolled_back": false,
+		"targets": targets.duplicate(true),
+	}
+
+func _read_target_state(path: String, editor_context: Dictionary) -> Dictionary:
+	var active_script_path: String = str(editor_context.get("active_script_path", "")).strip_edges()
+	var code_edit: CodeEdit = editor_context.get("code_edit", null)
+	if code_edit != null and not active_script_path.is_empty() and active_script_path == path:
+		return {
+			"text": code_edit.text,
+			"from_editor": true,
+		}
+	return {
+		"text": _read_text_file(path),
+		"from_editor": false,
+	}
+
+func _restore_target_state(path: String, text: String, editor_context: Dictionary) -> Dictionary:
+	var active_script_path: String = str(editor_context.get("active_script_path", "")).strip_edges()
+	var code_edit: CodeEdit = editor_context.get("code_edit", null)
+	if code_edit != null and not active_script_path.is_empty() and active_script_path == path:
+		code_edit.text = text
+		return {"ok": true}
+	return _write_text_file(path, text)
+
+func _delete_text_file(path: String) -> Dictionary:
+	if path.is_empty():
+		return {
+			"ok": false,
+			"error": "Missing file path.",
+		}
+	if not FileAccess.file_exists(path):
+		return {"ok": true}
+	var error: int = DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return {
+		"ok": error == OK,
+		"error": "Failed to remove file: %s" % path if error != OK else "",
+	}
+
 func build_request_preview_bbcode(preview: Dictionary) -> String:
+	return _build_request_preview_bbcode_v22(preview)
 	if preview.is_empty():
 		return ""
 
@@ -702,6 +1289,7 @@ func build_request_preview_bbcode(preview: Dictionary) -> String:
 	return "\n".join(lines)
 
 func _build_debug_label(preview: Dictionary) -> String:
+	return _build_debug_label_v22(preview)
 	var rules: Dictionary = preview.get("rules", {})
 	var context: Dictionary = preview.get("context", {})
 	var payload: Dictionary = preview.get("payload", {})
@@ -864,6 +1452,280 @@ func _push_usage_source(sources: Array, name: String, text: String) -> void:
 		"tokens": _estimate_text_tokens(cleaned),
 	})
 
+func _build_action_plan_summary(actions: Array, response_intent: String) -> Dictionary:
+	var applyable_count: int = 0
+	var high_risk_count: int = 0
+	var labels: Array = []
+	for action in actions:
+		if not (action is Dictionary):
+			continue
+		if bool(action.get("show_primary_action", false)):
+			applyable_count += 1
+		if str(action.get("risk_level", "")) == "high":
+			high_risk_count += 1
+		labels.append(str(action.get("button_label", action.get("action_type", "action"))))
+
+	return {
+		"response_intent": response_intent,
+		"action_count": actions.size(),
+		"applyable_count": applyable_count,
+		"high_risk_count": high_risk_count,
+		"labels": labels,
+	}
+
+func _build_request_preview_bbcode_v22(preview: Dictionary) -> String:
+	return _build_request_preview_bbcode_ascii(preview)
+	if preview.is_empty():
+		return ""
+
+	var usage: Dictionary = preview.get("usage", {})
+	if usage.is_empty():
+		usage = _build_usage_summary(preview)
+
+	var profile: Dictionary = preview.get("profile", {})
+	var rules: Dictionary = preview.get("rules", {})
+	var capabilities: Dictionary = preview.get("provider_capabilities", {})
+	var network: Dictionary = preview.get("network", {})
+	var lines: Array = []
+	lines.append("[b][color=#E5C07B]璇锋眰棰勮[/color][/b]")
+	lines.append("Request ID: %s" % String(preview.get("request_id", current_request_id)))
+	lines.append("鐘舵€侊細%s" % _localize_runtime_state(String(preview.get("runtime_state", runtime_state))))
+	lines.append("妯″瀷锛?%s" % String(preview.get("model", profile.get("name", "unknown"))))
+	lines.append("鎻愪緵鏂癸細%s" % _localize_provider_label(String(profile.get("provider", "unknown"))))
+	lines.append("杈撳叆锛?%s / %s tokens" % [
+		_format_token_count(int(usage.get("estimated_input_tokens", 0))),
+		_format_token_count(int(usage.get("input_budget_tokens", 0))),
+	])
+	lines.append("涓婁笅鏂囬」锛氬凡閫?%d锛屼涪寮?%d" % [
+		int(usage.get("selected_context_count", 0)),
+		int(usage.get("dropped_context_count", 0)),
+	])
+	lines.append("娑堟伅鏁帮細%d" % int(usage.get("message_count", 0)))
+	lines.append("鑷姩鍘嬬缉锛?%s" % _bool_to_zh(bool(preview.get("auto_compact", {}).get("performed", false))))
+	lines.append("鑳藉姏锛歴ystem=%s锛宺easoning=%s锛宼ools=%s" % [
+		_bool_to_zh(bool(capabilities.get("supports_system_role", false))),
+		_bool_to_zh(bool(capabilities.get("supports_reasoning_delta", false))),
+		_bool_to_zh(bool(capabilities.get("supports_tool_calls", false))),
+	])
+
+	if not network.is_empty():
+		lines.append("缃戠粶锛歊etry=%d锛宖allback=%s锛宼ransport=%s" % [
+			int(network.get("retry_count", 0)),
+			_bool_to_zh(bool(network.get("fallback_used", false))),
+			String(network.get("transport", "streaming")),
+		])
+		if bool(network.get("partial_response_kept", false)):
+			lines.append("閮ㄥ垎鍝嶅簲锛氬凡淇濈暀")
+
+	var selected_items: Array = []
+	for entry in preview.get("context_manifest", []):
+		if entry is Dictionary and bool(entry.get("selected", false)):
+			selected_items.append(entry)
+	if not selected_items.is_empty():
+		lines.append("")
+		lines.append("[b]宸查€変腑涓婁笅鏂?[/b]")
+		for index in range(mini(4, selected_items.size())):
+			var item: Dictionary = selected_items[index]
+			lines.append("- %s锛?%s tokens" % [
+				String(item.get("title", item.get("kind", "context"))),
+				_format_token_count(int(item.get("estimated_tokens", 0))),
+			])
+
+	var dropped_items: Array = preview.get("dropped_context_items", [])
+	if not dropped_items.is_empty():
+		lines.append("")
+		lines.append("[b]宸蹭涪寮冧笂涓嬫枃[/b]")
+		for index in range(mini(4, dropped_items.size())):
+			var item: Dictionary = dropped_items[index]
+			lines.append("- %s锛?%s" % [
+				String(item.get("title", item.get("kind", "context"))),
+				_localize_context_drop_reason(String(item.get("reason", "dropped"))),
+			])
+
+	var plan_summary: Dictionary = preview.get("action_plan_summary", {})
+	if not plan_summary.is_empty():
+		lines.append("")
+		lines.append("[b]鍔ㄤ綔璁″垝[/b]")
+		lines.append("- intent=%s锛宎ctions=%d锛宎pply=%d锛宧igh-risk=%d" % [
+			String(plan_summary.get("response_intent", "unknown")),
+			int(plan_summary.get("action_count", 0)),
+			int(plan_summary.get("applyable_count", 0)),
+			int(plan_summary.get("high_risk_count", 0)),
+		])
+
+	var last_error: String = String(preview.get("last_error", "")).strip_edges()
+	if not last_error.is_empty():
+		lines.append("")
+		lines.append("[b]鏈€杩戝け璐?[/b]")
+		lines.append(last_error)
+
+	var loaded_sources: Array = []
+	for source in rules.get("sources", []):
+		if source is Dictionary and bool(source.get("exists", false)):
+			loaded_sources.append(_localize_rule_source(String(source.get("path", ""))))
+	if not loaded_sources.is_empty():
+		lines.append("")
+		lines.append("[b]瑙勫垯[/b]")
+		for index in range(mini(3, loaded_sources.size())):
+			lines.append("- %s" % loaded_sources[index])
+
+	return "\n".join(lines)
+
+func _build_debug_label_v22(preview: Dictionary) -> String:
+	return _build_debug_label_ascii(preview)
+	var profile: Dictionary = preview.get("profile", {})
+	var network: Dictionary = preview.get("network", {})
+	var action_plan: Dictionary = preview.get("action_plan_summary", {})
+	var lines: Array = []
+	lines.append("id=%s" % String(preview.get("request_id", current_request_id)))
+	lines.append("state=%s" % _localize_runtime_state(String(preview.get("runtime_state", runtime_state))))
+	lines.append("provider=%s" % _localize_provider_label(String(profile.get("provider", "unknown"))))
+	if not network.is_empty():
+		lines.append("retry=%d" % int(network.get("retry_count", 0)))
+		lines.append("fallback=%s" % _bool_to_zh(bool(network.get("fallback_used", false))))
+	if not action_plan.is_empty():
+		lines.append("actions=%d" % int(action_plan.get("action_count", 0)))
+	var last_error: String = String(preview.get("last_error", "")).strip_edges()
+	if not last_error.is_empty():
+		lines.append("error=%s" % last_error)
+	return "[color=#7f848e][i]%s[/i][/color]" % "  |  ".join(lines)
+
+func _build_request_preview_bbcode_ascii(preview: Dictionary) -> String:
+	if preview.is_empty():
+		return ""
+
+	var usage: Dictionary = preview.get("usage", {})
+	if usage.is_empty():
+		usage = _build_usage_summary(preview)
+
+	var profile: Dictionary = preview.get("profile", {})
+	var rules: Dictionary = preview.get("rules", {})
+	var capabilities: Dictionary = preview.get("provider_capabilities", {})
+	var network: Dictionary = preview.get("network", {})
+	var lines: Array = []
+	lines.append("[b][color=#E5C07B]Request Preview[/color][/b]")
+	lines.append("Request ID: %s" % String(preview.get("request_id", current_request_id)))
+	lines.append("State: %s" % _localize_runtime_state_ascii(String(preview.get("runtime_state", runtime_state))))
+	lines.append("Model: %s" % String(preview.get("model", profile.get("name", "unknown"))))
+	lines.append("Provider: %s" % _localize_provider_label(String(profile.get("provider", "unknown"))))
+	lines.append("Input: %s / %s tokens" % [
+		_format_token_count(int(usage.get("estimated_input_tokens", 0))),
+		_format_token_count(int(usage.get("input_budget_tokens", 0))),
+	])
+	lines.append("Context items: selected %d, dropped %d" % [
+		int(usage.get("selected_context_count", 0)),
+		int(usage.get("dropped_context_count", 0)),
+	])
+	lines.append("Messages: %d" % int(usage.get("message_count", 0)))
+	lines.append("Auto compact: %s" % ("yes" if bool(preview.get("auto_compact", {}).get("performed", false)) else "no"))
+	lines.append("Capabilities: system=%s, reasoning=%s, tools=%s" % [
+		"yes" if bool(capabilities.get("supports_system_role", false)) else "no",
+		"yes" if bool(capabilities.get("supports_reasoning_delta", false)) else "no",
+		"yes" if bool(capabilities.get("supports_tool_calls", false)) else "no",
+	])
+
+	if not network.is_empty():
+		lines.append("Network: retry=%d, fallback=%s, transport=%s" % [
+			int(network.get("retry_count", 0)),
+			"yes" if bool(network.get("fallback_used", false)) else "no",
+			String(network.get("transport", "streaming")),
+		])
+		if bool(network.get("partial_response_kept", false)):
+			lines.append("Partial response: kept")
+
+	var selected_items: Array = []
+	for entry in preview.get("context_manifest", []):
+		if entry is Dictionary and bool(entry.get("selected", false)):
+			selected_items.append(entry)
+	if not selected_items.is_empty():
+		lines.append("")
+		lines.append("[b]Selected Context[/b]")
+		for index in range(mini(4, selected_items.size())):
+			var item: Dictionary = selected_items[index]
+			var reason_text: String = _join_string_values(item.get("relevance_reasons", []))
+			var line: String = "- %s: %s tokens" % [
+				String(item.get("title", item.get("kind", "context"))),
+				_format_token_count(int(item.get("estimated_tokens", 0))),
+			]
+			if not reason_text.is_empty():
+				line += " (%s)" % reason_text
+			lines.append(line)
+
+	var dropped_items: Array = preview.get("dropped_context_items", [])
+	if not dropped_items.is_empty():
+		lines.append("")
+		lines.append("[b]Dropped Context[/b]")
+		for index in range(mini(4, dropped_items.size())):
+			var item: Dictionary = dropped_items[index]
+			var drop_line: String = "- %s: %s" % [
+				String(item.get("title", item.get("kind", "context"))),
+				_localize_context_drop_reason(String(item.get("reason", "dropped"))),
+			]
+			var drop_reason_text: String = _join_string_values(item.get("relevance_reasons", []))
+			if not drop_reason_text.is_empty():
+				drop_line += " (%s)" % drop_reason_text
+			lines.append(drop_line)
+
+	var plan_summary: Dictionary = preview.get("action_plan_summary", {})
+	if not plan_summary.is_empty():
+		lines.append("")
+		lines.append("[b]Action Plan[/b]")
+		lines.append("- intent=%s, actions=%d, apply=%d, high-risk=%d" % [
+			String(plan_summary.get("response_intent", "unknown")),
+			int(plan_summary.get("action_count", 0)),
+			int(plan_summary.get("applyable_count", 0)),
+			int(plan_summary.get("high_risk_count", 0)),
+		])
+
+	var last_error: String = String(preview.get("last_error", "")).strip_edges()
+	if not last_error.is_empty():
+		lines.append("")
+		lines.append("[b]Last Error[/b]")
+		lines.append(last_error)
+
+	var loaded_sources: Array = []
+	for source in rules.get("sources", []):
+		if source is Dictionary and bool(source.get("exists", false)):
+			loaded_sources.append(_localize_rule_source(String(source.get("path", ""))))
+	if not loaded_sources.is_empty():
+		lines.append("")
+		lines.append("[b]Rules[/b]")
+		for index in range(mini(3, loaded_sources.size())):
+			lines.append("- %s" % loaded_sources[index])
+
+	return "\n".join(lines)
+
+func _build_debug_label_ascii(preview: Dictionary) -> String:
+	var profile: Dictionary = preview.get("profile", {})
+	var network: Dictionary = preview.get("network", {})
+	var action_plan: Dictionary = preview.get("action_plan_summary", {})
+	var lines: Array = []
+	lines.append("id=%s" % String(preview.get("request_id", current_request_id)))
+	lines.append("state=%s" % _localize_runtime_state_ascii(String(preview.get("runtime_state", runtime_state))))
+	lines.append("provider=%s" % _localize_provider_label(String(profile.get("provider", "unknown"))))
+	if not network.is_empty():
+		lines.append("retry=%d" % int(network.get("retry_count", 0)))
+		lines.append("fallback=%s" % ("yes" if bool(network.get("fallback_used", false)) else "no"))
+	if not action_plan.is_empty():
+		lines.append("actions=%d" % int(action_plan.get("action_count", 0)))
+	var last_error: String = String(preview.get("last_error", "")).strip_edges()
+	if not last_error.is_empty():
+		lines.append("error=%s" % last_error)
+	return "[color=#7f848e][i]%s[/i][/color]" % "  |  ".join(lines)
+
+func _join_string_values(values: Variant) -> String:
+	if not (values is Array):
+		return ""
+	var merged: String = ""
+	for value in values:
+		var text: String = String(value).strip_edges()
+		if text.is_empty():
+			continue
+		if not merged.is_empty():
+			merged += ", "
+		merged += text
+	return merged
+
 func _estimate_message_tokens(message: Dictionary) -> int:
 	return 4 + _estimate_text_tokens(String(message.get("content", "")))
 
@@ -914,6 +1776,7 @@ func _sort_usage_source_desc(a: Dictionary, b: Dictionary) -> bool:
 	return int(a.get("tokens", 0)) > int(b.get("tokens", 0))
 
 func _localize_runtime_state(state: String) -> String:
+	return _localize_runtime_state_v22(state)
 	match state:
 		STATE_IDLE:
 			return "空闲"
@@ -929,6 +1792,73 @@ func _localize_runtime_state(state: String) -> String:
 			return "失败"
 		STATE_STOPPED:
 			return "已停止"
+		_:
+			return state
+
+func _localize_runtime_state_v22(state: String) -> String:
+	return _localize_runtime_state_ascii(state)
+	match state:
+		STATE_IDLE:
+			return "绌洪棽"
+		STATE_COLLECT_CONTEXT:
+			return "鏀堕泦涓婁笅鏂?"
+		STATE_LOAD_RULES:
+			return "鍔犺浇瑙勫垯"
+		STATE_BUILD_REQUEST:
+			return "鏋勫缓璇锋眰"
+		STATE_SEND_REQUEST:
+			return "鍙戦€佽姹?"
+		STATE_STREAMING:
+			return "鐢熸垚涓?"
+		STATE_NORMALIZE_RESPONSE:
+			return "鏁寸悊鍥炲"
+		STATE_PLAN_ACTION:
+			return "瑙勫垝鍔ㄤ綔"
+		STATE_AWAIT_REVIEW:
+			return "绛夊緟纭"
+		STATE_APPLYING:
+			return "搴旂敤涓?"
+		STATE_PERSISTING:
+			return "淇濆瓨涓?"
+		STATE_COMPLETED:
+			return "宸插畬鎴?"
+		STATE_FAILED:
+			return "澶辫触"
+		STATE_STOPPED:
+			return "宸插仠姝?"
+		_:
+			return state
+
+func _localize_runtime_state_ascii(state: String) -> String:
+	match state:
+		STATE_IDLE:
+			return "idle"
+		STATE_COLLECT_CONTEXT:
+			return "collect_context"
+		STATE_LOAD_RULES:
+			return "load_rules"
+		STATE_BUILD_REQUEST:
+			return "build_request"
+		STATE_SEND_REQUEST:
+			return "send_request"
+		STATE_STREAMING:
+			return "streaming"
+		STATE_NORMALIZE_RESPONSE:
+			return "normalize_response"
+		STATE_PLAN_ACTION:
+			return "plan_action"
+		STATE_AWAIT_REVIEW:
+			return "await_review"
+		STATE_APPLYING:
+			return "applying"
+		STATE_PERSISTING:
+			return "persisting"
+		STATE_COMPLETED:
+			return "completed"
+		STATE_FAILED:
+			return "failed"
+		STATE_STOPPED:
+			return "stopped"
 		_:
 			return state
 
@@ -1025,6 +1955,7 @@ func _build_context_options(prompt: String) -> Dictionary:
 	var cleaned_prompt: String = prompt.strip_edges()
 	return {
 		"include_script_context": not _prompt_requests_scene_creation(cleaned_prompt),
+		"prompt": cleaned_prompt,
 	}
 
 func _prompt_requests_scene_creation(prompt: String) -> bool:
@@ -1534,6 +2465,7 @@ func _extract_provider_capabilities(profile: Dictionary) -> Dictionary:
 		"supports_system_role": bool(profile.get("supports_system_role", false)),
 		"supports_reasoning_delta": bool(profile.get("supports_reasoning_delta", false)),
 		"supports_streaming": bool(profile.get("supports_streaming", false)),
+		"supports_non_streaming_fallback": bool(profile.get("supports_non_streaming_fallback", false)),
 		"supports_tool_calls": bool(profile.get("supports_tool_calls", false)),
 		"supports_cache_hints": bool(profile.get("supports_cache_hints", false)),
 	}
