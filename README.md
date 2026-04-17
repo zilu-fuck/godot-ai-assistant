@@ -1,11 +1,11 @@
-# Godot AI Assistant v2.1
+# Godot AI Assistant v2.0.1
 
 这是一个面向 Godot 4 编辑器的 AI 编码助手插件项目，核心交付目录是 [addons/ai_assistant](E:/test/addons/ai_assistant)。
 
 如果你是第一次接手这个仓库，优先看：
 
 - [tasks/必看.md](E:/test/tasks/必看.md)
-- [tasks/v2.1更新报告.md](E:/test/tasks/v2.1更新报告.md)
+- [tasks/v2.0.1更新报告.md](E:/test/tasks/v2.0.1更新报告.md)
 
 ## 项目定位
 
@@ -21,7 +21,7 @@
 - 规则文件
 - 会话历史与结构化记忆
 
-## v2.1 当前能力
+## v2.0.1 当前能力
 
 - 多会话聊天与本地持久化
 - 流式输出、手动停止与错误回显
@@ -55,9 +55,9 @@ addons/ai_assistant/
 
 ## 版本信息
 
-- 插件版本：`2.1`
+- 插件版本：`2.0.1`
 - 插件配置文件：[plugin.cfg](E:/test/addons/ai_assistant/plugin.cfg)
-- 当前版本重点：完成运行时、规则、记忆、provider、动作执行分层，并补齐 v2.1 文档
+- 当前版本重点：完成运行时、规则、记忆、provider、动作执行分层，并补齐 v2.0.1 文档
 
 ## 验证
 
